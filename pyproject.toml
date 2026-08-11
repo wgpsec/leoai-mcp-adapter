@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "leoai-mcp-adapter"
+version = "0.1.0"
+description = "A bounded Streamable HTTP MCP adapter for LeoAI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx==0.28.1",
+  "mcp==1.26.0",
+  "uvicorn==0.42.0",
+]
+
+[project.scripts]
+leoai-mcp-adapter = "leoai_mcp_adapter.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest==9.0.2",
+  "pytest-asyncio==1.3.0",
+  "ruff==0.15.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/leoai_mcp_adapter"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
