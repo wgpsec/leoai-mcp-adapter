@@ -1,14 +1,17 @@
 # leoai-mcp-adapter
 
 A standalone Streamable HTTP MCP adapter for
-[LeoAI](https://github.com/cha0upup/LeoAI). It exposes a fixed set of bounded
-query tools for clients such as PoJun without embedding LeoAI, forking its Agent
-loop, or providing arbitrary HTTP forwarding.
+[LeoAI](https://github.com/cha0upup/LeoAI). It exposes bounded, explicitly mapped
+tools for clients such as PoJun without embedding LeoAI, forking its Agent loop,
+or providing arbitrary HTTP forwarding. The default `observe` profile is
+read-only; the opt-in `operate` profile adds audited Session, terminal, and file
+actions.
 
 The implementation targets the LeoAI `main` API at commit
 `6fb4de979db23de4fa8b23e5ed6a98c710a82fda`. Local protocol and contract tests,
-plus a live LeoAI `1.0.1` PHP Puppet session matrix, are complete. PoJun Docker
-Runtime validation remains an environment-level release gate.
+plus live LeoAI `1.0.1` Java and PHP Puppet observe, Session/terminal/file, and
+process/service/network matrices, are complete.
+PoJun Docker Runtime validation remains an environment-level release gate.
 
 LeoAI `1.0.1` does not contain the newer Project API. On that release,
 `leo_list_projects` and `leo_list_project_puppets` return
@@ -33,8 +36,21 @@ The default tool set is:
 - `leo_list_files`
 
 `leo_read_file` is registered only when `MCP_ENABLE_FILE_READ=true`. Commands,
-file writes, credential extraction, plugins, persistence, proxy/tunnel actions,
-LeoAI AI endpoints, and generic request forwarding are not exposed.
+file writes, and other actions are not exposed by the default `observe` profile.
+
+Set `MCP_TOOL_PROFILE=operate` to additionally register:
+
+- `leo_open_session` / `leo_close_session`
+- `leo_open_terminal` / `leo_write_terminal` / `leo_read_terminal` / `leo_stop_terminal`
+- `leo_create_file` / `leo_edit_file` / `leo_create_directory`
+- `leo_move_file` / `leo_copy_file` / `leo_delete_file`
+- `leo_list_processes` / `leo_find_processes` / `leo_kill_process`
+- `leo_list_services` / `leo_query_service` / `leo_control_service`
+- `leo_list_network_connections` / `leo_get_network_connection_summary`
+- Docker info/list/inspect/logs/exec/control/remove tools with fixed endpoints
+
+The future `privileged` profile is reserved for separately designed high-impact
+capabilities. Generic request forwarding is never exposed.
 
 ## Configuration
 
@@ -51,10 +67,12 @@ They are never MCP tool arguments.
 | `LEOAI_TLS_VERIFY` | `true` | Verify LeoAI TLS; production requires `true` |
 | `LEOAI_CONNECT_TIMEOUT_SECONDS` | `5` | Upstream connect timeout |
 | `LEOAI_READ_TIMEOUT_SECONDS` | `30` | Upstream read timeout |
-| `MCP_MAX_CONCURRENCY` | `8` | Fast-fail concurrent query limit |
+| `MCP_MAX_CONCURRENCY` | `8` | Fast-fail concurrent upstream call limit |
 | `MCP_MAX_RESPONSE_BYTES` | `1048576` | Maximum LeoAI response bytes |
+| `MCP_TOOL_PROFILE` | `observe` | `observe`, `operate`, or `privileged` deployment-side profile |
 | `MCP_ENABLE_FILE_READ` | `false` | Register the optional file read tool |
 | `MCP_MAX_FILE_BYTES` | `262144` | Maximum bytes per optional file read |
+| `MCP_MAX_FILE_WRITE_BYTES` | `262144` | Maximum UTF-8 bytes per file create/edit action |
 | `MCP_BIND_HOST` | `127.0.0.1` | HTTP bind address |
 | `MCP_BIND_PORT` | `8000` | HTTP bind port |
 | `MCP_ALLOWED_HOSTS` | localhost only | Comma-separated HTTP Host allowlist |

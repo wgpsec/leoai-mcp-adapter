@@ -162,6 +162,45 @@ async def test_client_reauthenticates_once_when_leoai_session_expires():
 
 
 @pytest.mark.asyncio
+async def test_client_does_not_replay_action_when_leoai_session_expires():
+    login_count = 0
+    action_count = 0
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal login_count, action_count
+        if request.url.path == "/platform/user/login":
+            login_count += 1
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": f"JSESSIONID=session-{login_count}; Path=/; HttpOnly"},
+            )
+        action_count += 1
+        return httpx.Response(401, json={"code": 401, "msg": "用户未登录"})
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("correct horse"),
+        mcp_client_token=SecretStr("adapter-token"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        with pytest.raises(LeoAIError) as error:
+            await client.request(
+                "POST",
+                "/puppet-node/file/new-dir",
+                json={"sessionId": "s-1", "path": "/tmp/canary"},
+                retry_on_auth_expiry=False,
+            )
+
+    assert error.value.code == "leoai_session_expired"
+    assert login_count == 1
+    assert action_count == 1
+
+
+@pytest.mark.asyncio
 async def test_client_maps_leoai_permission_denials_to_a_stable_error_code():
     def upstream(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/platform/user/login":

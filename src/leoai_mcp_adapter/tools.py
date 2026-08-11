@@ -10,10 +10,18 @@ from .errors import LeoAIError
 
 
 class LeoAITools:
-    def __init__(self, client: LeoAIClient, *, max_concurrency: int, max_file_bytes: int) -> None:
+    def __init__(
+        self,
+        client: LeoAIClient,
+        *,
+        max_concurrency: int,
+        max_file_bytes: int,
+        max_file_write_bytes: int,
+    ) -> None:
         self._client = client
         self._max_concurrency = max_concurrency
         self._max_file_bytes = max_file_bytes
+        self._max_file_write_bytes = max_file_write_bytes
         self._active_requests = 0
         self._limit_lock = asyncio.Lock()
 
@@ -205,6 +213,429 @@ class LeoAITools:
                 "offset": offset,
                 "nextOffset": offset + len(decoded),
                 "truncated": bool(data.get("truncated")),
+            },
+        }
+
+    async def open_session(self, puppet_id: str, project_id: str | None = None) -> dict[str, object]:
+        params = {"puppetId": puppet_id}
+        if project_id is not None:
+            params["projectId"] = project_id
+        data = await self._action_request("GET", "/puppet-node/init", params=params)
+        if not isinstance(data, dict) or not isinstance(data.get("sessionId"), str):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid opened session")
+        session = _pick(data, "sessionId", "puppetId", "projectId", "cacheMode", "capabilities")
+        session.setdefault("puppetId", puppet_id)
+        return {"untrusted_external_content": True, "session": session}
+
+    async def close_session(self, session_id: str) -> dict[str, object]:
+        await self._action_request(
+            "POST",
+            "/platform/session/sessions/delete",
+            json={"sessionId": session_id},
+        )
+        return {"operation": "session_closed", "sessionId": session_id}
+
+    async def terminal_action(
+        self,
+        session_id: str,
+        terminal_id: str,
+        *,
+        operation: str,
+        command_type: str,
+        command: str,
+    ) -> dict[str, object]:
+        request = self._request if command_type == "read" else self._action_request
+        data = await request(
+            "POST",
+            "/puppet-node/command/exec-command",
+            json={
+                "sessionId": session_id,
+                "processId": terminal_id,
+                "cmd": command,
+                "type": command_type,
+            },
+        )
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid terminal result")
+        return {
+            "untrusted_external_content": True,
+            "terminal": {
+                "terminalId": terminal_id,
+                "operation": operation,
+                "result": _sanitize_external(data),
+            },
+        }
+
+    async def create_file(self, session_id: str, path: str, content: str) -> dict[str, object]:
+        self._validate_file_content(content)
+        return await self._file_action(
+            "created",
+            path,
+            "/puppet-node/file/new-file",
+            {"sessionId": session_id, "path": path, "content": content},
+        )
+
+    async def edit_file(self, session_id: str, path: str, content: str) -> dict[str, object]:
+        self._validate_file_content(content)
+        return await self._file_action(
+            "edited",
+            path,
+            "/puppet-node/file/edit",
+            {"sessionId": session_id, "path": path, "content": content},
+        )
+
+    async def create_directory(self, session_id: str, path: str) -> dict[str, object]:
+        return await self._file_action(
+            "directory_created",
+            path,
+            "/puppet-node/file/new-dir",
+            {"sessionId": session_id, "path": path},
+        )
+
+    async def move_file(self, session_id: str, path: str, new_path: str) -> dict[str, object]:
+        return await self._file_action(
+            "moved",
+            path,
+            "/puppet-node/file/move",
+            {
+                "sessionId": session_id,
+                "path": path,
+                "newPath": new_path,
+                "conflictStrategy": "skip",
+            },
+            destination_path=new_path,
+        )
+
+    async def copy_file(self, session_id: str, path: str, destination_path: str) -> dict[str, object]:
+        return await self._file_action(
+            "copied",
+            path,
+            "/puppet-node/file/copy",
+            {
+                "sessionId": session_id,
+                "path": path,
+                "destPath": destination_path,
+                "conflictStrategy": "skip",
+            },
+            destination_path=destination_path,
+        )
+
+    async def delete_file(self, session_id: str, path: str) -> dict[str, object]:
+        return await self._file_action(
+            "deleted",
+            path,
+            "/puppet-node/file/delete",
+            {"sessionId": session_id, "path": path},
+        )
+
+    async def list_processes(self, session_id: str) -> dict[str, object]:
+        return await self._system_query(
+            "processes",
+            "/puppet-node/process/list",
+            {"sessionId": session_id},
+        )
+
+    async def find_processes(
+        self,
+        session_id: str,
+        *,
+        name: str | None,
+        pid: int | None,
+        port: int | None,
+    ) -> dict[str, object]:
+        if name is None and pid is None and port is None:
+            raise LeoAIError(
+                "tool_input_invalid",
+                "at least one process filter is required",
+            )
+        payload: dict[str, object] = {"sessionId": session_id}
+        if name is not None:
+            payload["name"] = name
+        if pid is not None:
+            payload["pid"] = pid
+        if port is not None:
+            payload["port"] = port
+        return await self._system_query("processes", "/puppet-node/process/find", payload)
+
+    async def kill_process(self, session_id: str, pid: int, force: bool) -> dict[str, object]:
+        return await self._system_action(
+            "process_killed",
+            str(pid),
+            "/puppet-node/process/kill",
+            {"sessionId": session_id, "pid": pid, "force": force},
+        )
+
+    async def list_services(self, session_id: str) -> dict[str, object]:
+        return await self._system_query(
+            "services",
+            "/puppet-node/service/list",
+            {"sessionId": session_id},
+        )
+
+    async def query_service(self, session_id: str, service_name: str) -> dict[str, object]:
+        return await self._system_query(
+            "service",
+            "/puppet-node/service/query",
+            {"sessionId": session_id, "serviceName": service_name},
+        )
+
+    async def control_service(
+        self,
+        session_id: str,
+        service_name: str,
+        action: str,
+    ) -> dict[str, object]:
+        endpoints = {
+            "start": "/puppet-node/service/start",
+            "stop": "/puppet-node/service/stop",
+            "restart": "/puppet-node/service/restart",
+        }
+        endpoint = endpoints.get(action)
+        if endpoint is None:
+            raise LeoAIError("tool_input_invalid", "unsupported service action")
+        return await self._system_action(
+            f"service_{action}",
+            service_name,
+            endpoint,
+            {"sessionId": session_id, "serviceName": service_name},
+        )
+
+    async def list_network_connections(
+        self,
+        session_id: str,
+        *,
+        state: str | None,
+        protocol: str | None,
+        port: int | None,
+        pid: int | None,
+        process: str | None,
+        remote_ip: str | None,
+        listening_only: bool,
+        max_entries: int,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "sessionId": session_id,
+            "listeningOnly": listening_only,
+            "maxEntries": max_entries,
+        }
+        for key, value in (
+            ("state", state),
+            ("protocol", protocol),
+            ("port", str(port) if port is not None else None),
+            ("pid", str(pid) if pid is not None else None),
+            ("process", process),
+            ("remoteIp", remote_ip),
+        ):
+            if value is not None:
+                payload[key] = value
+        return await self._system_query(
+            "networkConnections",
+            "/puppet-node/network-connection/list",
+            payload,
+        )
+
+    async def get_network_connection_summary(self, session_id: str) -> dict[str, object]:
+        return await self._system_query(
+            "networkConnectionSummary",
+            "/puppet-node/network-connection/summary",
+            {"sessionId": session_id},
+        )
+
+    async def get_docker_info(self, session_id: str) -> dict[str, object]:
+        return await self._docker_query("info", "/puppet-node/docker/info", {"sessionId": session_id})
+
+    async def list_docker_containers(self, session_id: str, include_stopped: bool) -> dict[str, object]:
+        return await self._docker_query(
+            "containers",
+            "/puppet-node/docker/list-containers",
+            {"sessionId": session_id, "all": include_stopped},
+        )
+
+    async def list_docker_images(self, session_id: str) -> dict[str, object]:
+        return await self._docker_query(
+            "images",
+            "/puppet-node/docker/list-images",
+            {"sessionId": session_id},
+        )
+
+    async def list_docker_networks(self, session_id: str) -> dict[str, object]:
+        return await self._docker_query(
+            "networks",
+            "/puppet-node/docker/list-networks",
+            {"sessionId": session_id},
+        )
+
+    async def inspect_docker_container(self, session_id: str, container_id: str) -> dict[str, object]:
+        return await self._docker_query(
+            "inspect",
+            "/puppet-node/docker/inspect",
+            {"sessionId": session_id, "containerId": container_id},
+        )
+
+    async def get_docker_container_logs(
+        self,
+        session_id: str,
+        container_id: str,
+        tail: int,
+    ) -> dict[str, object]:
+        return await self._docker_query(
+            "logs",
+            "/puppet-node/docker/logs",
+            {"sessionId": session_id, "containerId": container_id, "tail": tail},
+        )
+
+    async def exec_in_docker_container(
+        self,
+        session_id: str,
+        container_id: str,
+        command: str,
+    ) -> dict[str, object]:
+        return await self._system_action(
+            "docker_exec",
+            container_id,
+            "/puppet-node/docker/exec",
+            {"sessionId": session_id, "containerId": container_id, "cmd": command},
+        )
+
+    async def control_docker_container(
+        self,
+        session_id: str,
+        container_id: str,
+        action: str,
+        stop_timeout_seconds: int,
+    ) -> dict[str, object]:
+        endpoints = {
+            "start": "/puppet-node/docker/start",
+            "stop": "/puppet-node/docker/stop",
+            "restart": "/puppet-node/docker/restart",
+            "pause": "/puppet-node/docker/pause",
+            "unpause": "/puppet-node/docker/unpause",
+        }
+        endpoint = endpoints.get(action)
+        if endpoint is None:
+            raise LeoAIError("tool_input_invalid", "unsupported Docker container action")
+        payload: dict[str, object] = {
+            "sessionId": session_id,
+            "containerId": container_id,
+        }
+        if action in {"stop", "restart"}:
+            payload["timeout"] = stop_timeout_seconds
+        return await self._system_action(
+            f"docker_container_{action}",
+            container_id,
+            endpoint,
+            payload,
+        )
+
+    async def remove_docker_container(
+        self,
+        session_id: str,
+        container_id: str,
+        force: bool,
+    ) -> dict[str, object]:
+        return await self._system_action(
+            "docker_container_removed",
+            container_id,
+            "/puppet-node/docker/remove-container",
+            {"sessionId": session_id, "containerId": container_id, "force": force},
+        )
+
+    async def remove_docker_image(
+        self,
+        session_id: str,
+        image_id: str,
+        force: bool,
+    ) -> dict[str, object]:
+        return await self._system_action(
+            "docker_image_removed",
+            image_id,
+            "/puppet-node/docker/remove-image",
+            {"sessionId": session_id, "imageId": image_id, "force": force},
+        )
+
+    def _validate_file_content(self, content: str) -> None:
+        if len(content.encode("utf-8")) > self._max_file_write_bytes:
+            raise LeoAIError(
+                "tool_input_too_large",
+                "file content exceeded the configured UTF-8 byte limit",
+            )
+
+    async def _file_action(
+        self,
+        operation: str,
+        path: str,
+        endpoint: str,
+        payload: dict[str, object],
+        *,
+        destination_path: str | None = None,
+    ) -> dict[str, object]:
+        data = await self._action_request("POST", endpoint, json=payload)
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid file action result")
+        action: dict[str, object] = {
+            "operation": operation,
+            "path": path,
+            "result": _sanitize_external(data),
+        }
+        if destination_path is not None:
+            action["destinationPath"] = destination_path
+        return {"untrusted_external_content": True, "fileAction": action}
+
+    async def _action_request(self, method: str, path: str, **kwargs: Any) -> Any:
+        return await self._request(
+            method,
+            path,
+            retry_on_auth_expiry=False,
+            **kwargs,
+        )
+
+    async def _system_query(
+        self,
+        result_name: str,
+        endpoint: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        data = await self._request("POST", endpoint, json=payload)
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid system query result")
+        return {
+            "untrusted_external_content": True,
+            result_name: _sanitize_external(data),
+        }
+
+    async def _docker_query(
+        self,
+        operation: str,
+        endpoint: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        data = await self._request("POST", endpoint, json=payload)
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid Docker query result")
+        return {
+            "untrusted_external_content": True,
+            "docker": {
+                "operation": operation,
+                "result": _sanitize_external(data),
+            },
+        }
+
+    async def _system_action(
+        self,
+        operation: str,
+        target: str,
+        endpoint: str,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        data = await self._action_request("POST", endpoint, json=payload)
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid system action result")
+        return {
+            "untrusted_external_content": True,
+            "systemAction": {
+                "operation": operation,
+                "target": target,
+                "result": _sanitize_external(data),
             },
         }
 

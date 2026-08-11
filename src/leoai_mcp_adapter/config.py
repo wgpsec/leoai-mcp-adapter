@@ -31,8 +31,10 @@ class Settings:
     leoai_read_timeout_seconds: float = 30.0
     mcp_max_concurrency: int = 8
     mcp_max_response_bytes: int = 1024 * 1024
+    mcp_tool_profile: str = "observe"
     mcp_enable_file_read: bool = False
     mcp_max_file_bytes: int = 256 * 1024
+    mcp_max_file_write_bytes: int = 256 * 1024
     mcp_bind_host: str = "127.0.0.1"
     mcp_bind_port: int = 8000
     mcp_allowed_hosts: tuple[str, ...] = _DEFAULT_ALLOWED_HOSTS
@@ -69,8 +71,16 @@ class Settings:
             leoai_read_timeout_seconds=_float(env, "LEOAI_READ_TIMEOUT_SECONDS", 30.0, 0.1, 300.0),
             mcp_max_concurrency=_integer(env, "MCP_MAX_CONCURRENCY", 8, 1, 64),
             mcp_max_response_bytes=_integer(env, "MCP_MAX_RESPONSE_BYTES", 1024 * 1024, 1024, 16 * 1024 * 1024),
+            mcp_tool_profile=_choice(env, "MCP_TOOL_PROFILE", "observe", {"observe", "operate", "privileged"}),
             mcp_enable_file_read=_boolean(env, "MCP_ENABLE_FILE_READ", False),
             mcp_max_file_bytes=_integer(env, "MCP_MAX_FILE_BYTES", 256 * 1024, 1, 2 * 1024 * 1024),
+            mcp_max_file_write_bytes=_integer(
+                env,
+                "MCP_MAX_FILE_WRITE_BYTES",
+                256 * 1024,
+                1,
+                2 * 1024 * 1024,
+            ),
             mcp_bind_host=str(env.get("MCP_BIND_HOST") or "127.0.0.1").strip(),
             mcp_bind_port=_integer(env, "MCP_BIND_PORT", 8000, 1, 65535),
             mcp_allowed_hosts=allowed_hosts,
@@ -104,6 +114,14 @@ def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
     if value in {"0", "false", "no", "off"}:
         return False
     raise SettingsError(f"{name} must be true or false")
+
+
+def _choice(env: Mapping[str, str], name: str, default: str, choices: set[str]) -> str:
+    value = str(env.get(name) or default).strip().lower()
+    if value not in choices:
+        expected = ", ".join(sorted(choices))
+        raise SettingsError(f"{name} must be one of: {expected}")
+    return value
 
 
 def _integer(env: Mapping[str, str], name: str, default: int, minimum: int, maximum: int) -> int:

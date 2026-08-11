@@ -31,6 +31,43 @@ def test_settings_loads_operator_supplied_credentials_from_secret_files(tmp_path
     assert settings.leoai_username == "operator"
     assert settings.leoai_password.get_secret_value() == "correct horse"
     assert settings.mcp_client_token.get_secret_value() == "adapter-token"
+    assert settings.mcp_tool_profile == "observe"
+    assert settings.mcp_max_file_write_bytes == 256 * 1024
+
+
+def test_settings_loads_operate_profile_and_bounded_file_write_limit(tmp_path):
+    password_file = _secret_file(tmp_path, "leoai-password", "secret")
+    token_file = _secret_file(tmp_path, "mcp-token", "token")
+
+    settings = Settings.from_env(
+        {
+            "LEOAI_BASE_URL": "https://leoai.internal",
+            "LEOAI_USERNAME": "operator",
+            "LEOAI_PASSWORD_FILE": os.fspath(password_file),
+            "MCP_CLIENT_TOKEN_FILE": os.fspath(token_file),
+            "MCP_TOOL_PROFILE": "operate",
+            "MCP_MAX_FILE_WRITE_BYTES": "131072",
+        }
+    )
+
+    assert settings.mcp_tool_profile == "operate"
+    assert settings.mcp_max_file_write_bytes == 131072
+
+
+def test_settings_rejects_unknown_tool_profile(tmp_path):
+    password_file = _secret_file(tmp_path, "leoai-password", "secret")
+    token_file = _secret_file(tmp_path, "mcp-token", "token")
+
+    with pytest.raises(SettingsError, match="MCP_TOOL_PROFILE"):
+        Settings.from_env(
+            {
+                "LEOAI_BASE_URL": "https://leoai.internal",
+                "LEOAI_USERNAME": "operator",
+                "LEOAI_PASSWORD_FILE": os.fspath(password_file),
+                "MCP_CLIENT_TOKEN_FILE": os.fspath(token_file),
+                "MCP_TOOL_PROFILE": "everything",
+            }
+        )
 
 
 def test_settings_rejects_group_readable_secret_files(tmp_path):

@@ -46,13 +46,22 @@ class LeoAIClient:
     async def check_ready(self) -> None:
         await self._ensure_authenticated()
 
-    async def request(self, method: str, path: str, *, params: dict[str, Any] | None = None, json: Any = None) -> Any:
+    async def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any = None,
+        retry_on_auth_expiry: bool = True,
+    ) -> Any:
         await self._ensure_authenticated()
         response = await self._send(method, path, params=params, json=json)
         if _is_unauthorized(response):
             self._authenticated = False
-            await self._ensure_authenticated()
-            response = await self._send(method, path, params=params, json=json)
+            if retry_on_auth_expiry:
+                await self._ensure_authenticated()
+                response = await self._send(method, path, params=params, json=json)
         return _response_data(response)
 
     async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
