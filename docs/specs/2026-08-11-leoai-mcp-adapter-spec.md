@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：Phase 1、Phase 2.1、Phase 2.2a Implemented；Phase 2.2b Planned
+- 状态：Phase 1、Phase 2.1、Phase 2.2a、Phase 2.2b 扫描批次 Implemented；Phase 2.2b 其余 Planned
 - 日期：2026-08-11
 - 仓库：`leoai-mcp-adapter`
 - 上游：[cha0upup/LeoAI](https://github.com/cha0upup/LeoAI)
@@ -265,9 +265,31 @@ Phase 2.2a 在相同档位补充系统调查与控制：
 | `leo_remove_docker_container` | `POST /puppet-node/docker/remove-container` | 删除明确容器 |
 | `leo_remove_docker_image` | `POST /puppet-node/docker/remove-image` | 删除明确镜像引用 |
 
+Phase 2.2b 第一批在相同档位补充扫描能力：
+
+| MCP Tool | LeoAI API | 语义 |
+|---|---|---|
+| `leo_check_host_reachability` | `POST /puppet-node/host-reachable/scan` | 对最多 256 个有界主机执行主动可达性探测 |
+| `leo_start_port_scan` | `POST /puppet-node/port-scan/start-scan` | 对单个目标启动最多 4096 个端口的异步扫描 |
+| `leo_query_port_scan` | `POST /puppet-node/port-scan/query-result` | 查询明确的端口扫描 taskId |
+| `leo_control_port_scan` | `/puppet-node/port-scan/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
+| `leo_start_fingerprint_scan` | `POST /puppet-node/fingerprint/start-scan` | 使用 LeoAI VFS 中既有指纹扫描最多 128 个结构化 HTTP/TCP 目标 |
+| `leo_query_fingerprint_scan` | `POST /puppet-node/fingerprint/query-result` | 查询明确的指纹扫描 taskId |
+| `leo_control_fingerprint_scan` | `/puppet-node/fingerprint/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
+| `leo_start_recon_scan` | `POST /puppet-node/recon-scan/start-scan` | 使用结构化 protocol/tags/fingerprintIds 选择器启动侦察扫描 |
+| `leo_query_recon_scan` | `POST /puppet-node/recon-scan/query-result` | 查询明确的侦察扫描 taskId |
+| `leo_control_recon_scan` | `/puppet-node/recon-scan/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
+
+主机可达性、扫描启动和扫描控制都会主动影响目标或任务状态，统一按 Action 处理，
+遇到认证过期不得重放。只有任务查询可以重登并重试一次。HTTP 目标只接受
+`protocol=http + baseUrl`，TCP 目标只接受 `protocol=tcp + host + port`，额外字段
+直接拒绝。指纹 ID 必须指向 LeoAI VFS 中既有配置，adapter 不提供动态规则上传。
+指纹与侦察扫描依赖 `ComponentInvokeCapable`，PHP Puppet 不支持时明确返回 capability
+unsupported，不伪造降级结果。
+
 服务创建/删除与开机自启属于持久化，不进入 `operate`。Phase 2.2b 后续按真实上游
-契约补充扫描、结构化数据库操作、文件传输和已安装插件白名单调用。每项能力必须
-是固定 endpoint 和严格 schema，不能退化为通用请求工具。
+契约补充结构化数据库操作、文件传输和已安装插件白名单调用。每项能力必须是固定
+endpoint 和严格 schema，不能退化为通用请求工具。
 
 终端采用 LeoAI 现有有状态协议，不由 adapter 猜测命令何时完成。Agent 必须先
 打开 terminal，再写入命令、按需读取，并在结束时 stop；一次调用的输入和响应均
@@ -405,7 +427,7 @@ LeoAI API 或响应结构变化时，通过 contract fixtures 固定兼容范围
     File Action Tool。
 13. 在合成 Java/PHP Puppet 上逐项执行无害 canary，验证响应投影、审计和清理。
 14. Phase 2.2a 按 Controller 分组增加进程、服务、网络连接和 Docker 能力。
-15. Phase 2.2b 增加扫描、数据库、文件传输和已安装插件白名单能力。
+15. Phase 2.2b 先增加扫描完整生命周期，再增加数据库、文件传输和已安装插件白名单能力。
 
 ## 11. 验收标准
 
@@ -462,7 +484,7 @@ Action Tool 回放：
 
 同日完成 Phase 2.2a 系统工具真实回放：
 
-- 当前 `operate` 注册 39 个 Tool；开启可选文件读取后为 40 个；
+- Phase 2.2a 完成时 `operate` 注册 39 个 Tool；开启可选文件读取后为 40 个；
 - PHP/Java 均通过进程 list/find，并真实终止各自独立创建的 `sleep` canary；
 - PHP/Java 均通过服务 list/query 和网络连接 list/summary；
 - 服务 start/stop/restart 未对真实系统服务执行，只通过固定 endpoint 契约测试；
@@ -472,6 +494,23 @@ Action Tool 回放：
   未在无 daemon 节点伪造成功结论；
 - 回放后两个 process canary 均已被 Tool 终止，Session/Puppet 再次回到 0，临时
   PHP/Tomcat 服务、脚本和本地 Cookie 全部清理。
+
+### 11.3 扫描批次真实验证结论
+
+2026-08-11 使用相同 LeoAI 1.0.1 节点、新生成的临时 Java/PHP Puppet 和 loopback
+目标完成扫描回放：
+
+- 当前 `operate` 注册 49 个显式 Tool；开启可选文件读取后为 50 个；
+- PHP 的主机可达性、端口扫描 start/query/stop 全部通过；
+- PHP 指纹和侦察扫描由上游按 capability 拒绝，adapter 不降级成其他执行入口；
+- Java 的主机可达性、端口扫描 start/query、指纹扫描 start/query/stop 全部通过；
+- 对已快速完成的 Java 端口任务执行 stop 时，上游返回 500；adapter 没有重放动作，
+  pause/resume/stop 的固定 endpoint 和 no-replay 语义由契约测试覆盖；
+- Java Recon 已到达真实 `/puppet-node/recon-scan/start-scan`，但 LeoAI 1.0.1 与新生成
+  Java Puppet 之间返回 `响应 requestId 不匹配`。adapter 正确 fail-closed，不重试或
+  伪造结果；该项保留为 LeoAI Runtime 兼容缺口，后续用正式部署 Puppet 复核；
+- 回放仅扫描 `127.0.0.1` 的临时端口；结束后两个 Puppet、全部 Session 和监听服务
+  均已清理，平台最终 `sessions=0`。
 
 ## 12. 发布与回滚
 
@@ -485,9 +524,9 @@ Action Tool 回放：
 ## 13. 后续阶段门槛
 
 Phase 2.2a 已在 `operate` 中实现进程、服务、网络连接和 Docker 工具。Phase 2.2b
-继续实现以下显式能力：
+扫描批次已实现，当前 `operate` 注册 49 个 Tool，开启可选文件读取后为 50 个。
+Phase 2.2b 继续实现以下显式能力：
 
-- 端口/指纹/侦察扫描及任务生命周期；
 - 结构化数据库查询与变更；
 - 有界文件上传/下载任务；
 - 部署者白名单内的既有插件调用。
@@ -509,4 +548,5 @@ Phase 2.2a 已在 `operate` 中实现进程、服务、网络连接和 Docker �
 
 - 在部署环境中创建并手动交付专用低权限 LeoAI 账号密码；本次一次性验证使用管理员账号，不作为生产配置；
 - 完成 PoJun Docker Runtime、Claude-compatible/Codex 和 OODA continuation 回放；
-- Phase 2.2b 和 `privileged` Tool 按本 spec 的分层边界继续逐组设计与评审。
+- 使用正式部署的 Java Puppet 复核 Recon `requestId` 兼容问题；
+- Phase 2.2b 其余批次和 `privileged` Tool 按本 spec 的分层边界继续逐组设计与评审。

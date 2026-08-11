@@ -4,13 +4,16 @@ A standalone Streamable HTTP MCP adapter for
 [LeoAI](https://github.com/cha0upup/LeoAI). It exposes bounded, explicitly mapped
 tools for clients such as PoJun without embedding LeoAI, forking its Agent loop,
 or providing arbitrary HTTP forwarding. The default `observe` profile is
-read-only; the opt-in `operate` profile adds audited Session, terminal, and file
-actions.
+read-only; the opt-in `operate` profile adds audited Session, terminal, file,
+system, Docker, and bounded scan actions.
 
 The implementation targets the LeoAI `main` API at commit
 `6fb4de979db23de4fa8b23e5ed6a98c710a82fda`. Local protocol and contract tests,
 plus live LeoAI `1.0.1` Java and PHP Puppet observe, Session/terminal/file, and
-process/service/network matrices, are complete.
+process/service/network/scan matrices, are complete. The live Java Puppet passed
+host, port, and fingerprint scans; recon reached LeoAI but the generated Java
+Puppet returned an upstream `requestId` mismatch, which remains a LeoAI runtime
+compatibility gap rather than an adapter fallback.
 PoJun Docker Runtime validation remains an environment-level release gate.
 
 LeoAI `1.0.1` does not contain the newer Project API. On that release,
@@ -47,7 +50,16 @@ Set `MCP_TOOL_PROFILE=operate` to additionally register:
 - `leo_list_processes` / `leo_find_processes` / `leo_kill_process`
 - `leo_list_services` / `leo_query_service` / `leo_control_service`
 - `leo_list_network_connections` / `leo_get_network_connection_summary`
+- `leo_check_host_reachability`
+- `leo_start_port_scan` / `leo_query_port_scan` / `leo_control_port_scan`
+- `leo_start_fingerprint_scan` / `leo_query_fingerprint_scan` / `leo_control_fingerprint_scan`
+- `leo_start_recon_scan` / `leo_query_recon_scan` / `leo_control_recon_scan`
 - Docker info/list/inspect/logs/exec/control/remove tools with fixed endpoints
+
+Scan starts and controls are actions and are never replayed after an expired
+LeoAI login. Scan queries may reauthenticate and retry once. Fingerprint and
+recon targets accept only structured HTTP or TCP forms; fingerprint and recon
+scans require a Java Puppet with component invocation support.
 
 The future `privileged` profile is reserved for separately designed high-impact
 capabilities. Generic request forwarding is never exposed.

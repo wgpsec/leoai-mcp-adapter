@@ -441,6 +441,155 @@ class LeoAITools:
             {"sessionId": session_id},
         )
 
+    async def check_host_reachability(
+        self,
+        session_id: str,
+        hosts: list[str],
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/host-reachable/scan",
+            json={
+                "sessionId": session_id,
+                "scanHosts": hosts,
+                "scanTimeout": timeout_ms,
+            },
+        )
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid host reachability result")
+        return {
+            "untrusted_external_content": True,
+            "hostReachability": _sanitize_external(data),
+        }
+
+    async def start_port_scan(
+        self,
+        session_id: str,
+        host: str,
+        ports: list[int],
+        timeout_ms: int,
+        threads: int,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/port-scan/start-scan",
+            json={
+                "sessionId": session_id,
+                "scanHost": host,
+                "scanPorts": ports,
+                "scanTimeout": timeout_ms,
+                "threadsNum": threads,
+            },
+        )
+        return self._scan_start_result("port", data)
+
+    async def query_port_scan(self, session_id: str, task_id: str) -> dict[str, object]:
+        return await self._query_scan(
+            "port",
+            "/puppet-node/port-scan",
+            session_id,
+            task_id,
+        )
+
+    async def control_port_scan(
+        self,
+        session_id: str,
+        task_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        return await self._control_scan(
+            "port",
+            "/puppet-node/port-scan",
+            session_id,
+            task_id,
+            action,
+        )
+
+    async def start_fingerprint_scan(
+        self,
+        session_id: str,
+        fingerprint_id: str,
+        targets: list[dict[str, object]],
+        threads: int,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/fingerprint/start-scan",
+            json={
+                "sessionId": session_id,
+                "fingerprintId": fingerprint_id,
+                "targets": targets,
+                "threads": threads,
+            },
+        )
+        return self._scan_start_result("fingerprint", data)
+
+    async def query_fingerprint_scan(self, session_id: str, task_id: str) -> dict[str, object]:
+        return await self._query_scan(
+            "fingerprint",
+            "/puppet-node/fingerprint",
+            session_id,
+            task_id,
+        )
+
+    async def control_fingerprint_scan(
+        self,
+        session_id: str,
+        task_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        return await self._control_scan(
+            "fingerprint",
+            "/puppet-node/fingerprint",
+            session_id,
+            task_id,
+            action,
+        )
+
+    async def start_recon_scan(
+        self,
+        session_id: str,
+        targets: list[dict[str, object]],
+        rule_selector: dict[str, object] | None,
+        threads: int,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "sessionId": session_id,
+            "targets": targets,
+            "threads": threads,
+        }
+        if rule_selector is not None:
+            payload["ruleSelector"] = rule_selector
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/recon-scan/start-scan",
+            json=payload,
+        )
+        return self._scan_start_result("recon", data)
+
+    async def query_recon_scan(self, session_id: str, task_id: str) -> dict[str, object]:
+        return await self._query_scan(
+            "recon",
+            "/puppet-node/recon-scan",
+            session_id,
+            task_id,
+        )
+
+    async def control_recon_scan(
+        self,
+        session_id: str,
+        task_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        return await self._control_scan(
+            "recon",
+            "/puppet-node/recon-scan",
+            session_id,
+            task_id,
+            action,
+        )
+
     async def get_docker_info(self, session_id: str) -> dict[str, object]:
         return await self._docker_query("info", "/puppet-node/docker/info", {"sessionId": session_id})
 
@@ -638,6 +787,67 @@ class LeoAITools:
                 "result": _sanitize_external(data),
             },
         }
+
+    def _scan_result(
+        self,
+        scan_type: str,
+        operation: str,
+        data: object,
+        *,
+        task_id: str | None = None,
+    ) -> dict[str, object]:
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid scan result")
+        task: dict[str, object] = {
+            "scanType": scan_type,
+            "operation": operation,
+            "result": _sanitize_external(data),
+        }
+        if task_id is not None:
+            task["taskId"] = task_id
+        return {"untrusted_external_content": True, "scanTask": task}
+
+    def _scan_start_result(self, scan_type: str, data: object) -> dict[str, object]:
+        if not isinstance(data, dict) or not isinstance(data.get("taskId"), str) or not data["taskId"]:
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned a scan start without a task ID")
+        return self._scan_result(scan_type, "started", data)
+
+    async def _query_scan(
+        self,
+        scan_type: str,
+        endpoint_prefix: str,
+        session_id: str,
+        task_id: str,
+    ) -> dict[str, object]:
+        data = await self._request(
+            "POST",
+            f"{endpoint_prefix}/query-result",
+            json={"sessionId": session_id, "taskId": task_id},
+        )
+        return self._scan_result(scan_type, "queried", data, task_id=task_id)
+
+    async def _control_scan(
+        self,
+        scan_type: str,
+        endpoint_prefix: str,
+        session_id: str,
+        task_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        endpoints = {
+            "pause": "pause-scan",
+            "resume": "resume-scan",
+            "stop": "stop-scan",
+        }
+        endpoint = endpoints.get(action)
+        if endpoint is None:
+            raise LeoAIError("tool_input_invalid", "unsupported scan action")
+        data = await self._action_request(
+            "POST",
+            f"{endpoint_prefix}/{endpoint}",
+            json={"sessionId": session_id, "taskId": task_id},
+        )
+        return self._scan_result(scan_type, action, data, task_id=task_id)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         async with self._limit_lock:

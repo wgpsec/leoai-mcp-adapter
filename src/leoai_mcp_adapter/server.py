@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -77,6 +77,11 @@ RemoteAddress = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[^
 PositivePid = Annotated[int, Field(ge=1, le=2_147_483_647)]
 NetworkPort = Annotated[int, Field(ge=1, le=65535)]
 NetworkEntryLimit = Annotated[int, Field(ge=1, le=2000)]
+ScanHost = Annotated[str, Field(min_length=1, max_length=253, pattern=r"^[^\x00-\x1f\x7f]+$")]
+ScanHosts = Annotated[list[ScanHost], Field(min_length=1, max_length=256)]
+ScanPorts = Annotated[list[NetworkPort], Field(min_length=1, max_length=4096)]
+ScanTimeout = Annotated[int, Field(ge=1, le=300000)]
+ScanThreads = Annotated[int, Field(ge=1, le=100)]
 DockerTail = Annotated[int, Field(ge=1, le=10000)]
 DockerTimeout = Annotated[int, Field(ge=0, le=300)]
 DockerReference = Annotated[
@@ -85,9 +90,43 @@ DockerReference = Annotated[
 ]
 ServiceAction = Literal["start", "stop", "restart"]
 DockerContainerAction = Literal["start", "stop", "restart", "pause", "unpause"]
+ScanAction = Literal["pause", "resume", "stop"]
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 ACTION = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
+
+class HttpScanTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol: Literal["http"]
+    baseUrl: Annotated[
+        str,
+        Field(min_length=8, max_length=2048, pattern=r"^https?://[^\x00-\x20\x7f]+$"),
+    ]
+
+
+class TcpScanTarget(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol: Literal["tcp"]
+    host: ScanHost
+    port: NetworkPort
+
+
+ScanTarget = Annotated[HttpScanTarget | TcpScanTarget, Field(discriminator="protocol")]
+ScanTargets = Annotated[list[ScanTarget], Field(min_length=1, max_length=128)]
+SelectorTag = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")]
+SelectorTags = Annotated[list[SelectorTag], Field(max_length=64)]
+FingerprintIds = Annotated[list[Identifier], Field(max_length=128)]
+
+
+class ReconRuleSelector(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol: Literal["http", "tcp"] | None = None
+    tags: SelectorTags = Field(default_factory=list)
+    fingerprintIds: FingerprintIds = Field(default_factory=list)
 
 
 def _register_tools(
@@ -335,6 +374,99 @@ def _register_tools(
         async def get_network_connection_summary(sessionId: Identifier) -> dict[str, object]:
             """Get a bounded network-connection summary for one Session."""
             return await tools.get_network_connection_summary(sessionId)
+
+        @mcp.tool(name="leo_check_host_reachability", annotations=ACTION)
+        async def check_host_reachability(
+            sessionId: Identifier,
+            hosts: ScanHosts,
+            timeoutMs: ScanTimeout = 3000,
+        ) -> dict[str, object]:
+            """Actively test a bounded list of hosts for reachability."""
+            return await tools.check_host_reachability(sessionId, hosts, timeoutMs)
+
+        @mcp.tool(name="leo_start_port_scan", annotations=ACTION)
+        async def start_port_scan(
+            sessionId: Identifier,
+            host: ScanHost,
+            ports: ScanPorts,
+            timeoutMs: ScanTimeout = 3000,
+            threads: ScanThreads = 10,
+        ) -> dict[str, object]:
+            """Start one bounded asynchronous port scan."""
+            return await tools.start_port_scan(sessionId, host, ports, timeoutMs, threads)
+
+        @mcp.tool(name="leo_query_port_scan", annotations=READ_ONLY)
+        async def query_port_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
+            """Query one explicit asynchronous port-scan task."""
+            return await tools.query_port_scan(sessionId, taskId)
+
+        @mcp.tool(name="leo_control_port_scan", annotations=DESTRUCTIVE)
+        async def control_port_scan(
+            sessionId: Identifier,
+            taskId: Identifier,
+            action: ScanAction,
+        ) -> dict[str, object]:
+            """Pause, resume, or stop one explicit port-scan task."""
+            return await tools.control_port_scan(sessionId, taskId, action)
+
+        @mcp.tool(name="leo_start_fingerprint_scan", annotations=ACTION)
+        async def start_fingerprint_scan(
+            sessionId: Identifier,
+            fingerprintId: Identifier,
+            targets: ScanTargets,
+            threads: ScanThreads = 10,
+        ) -> dict[str, object]:
+            """Start one fingerprint scan against bounded HTTP or TCP targets."""
+            return await tools.start_fingerprint_scan(
+                sessionId,
+                fingerprintId,
+                [target.model_dump() for target in targets],
+                threads,
+            )
+
+        @mcp.tool(name="leo_query_fingerprint_scan", annotations=READ_ONLY)
+        async def query_fingerprint_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
+            """Query one explicit asynchronous fingerprint-scan task."""
+            return await tools.query_fingerprint_scan(sessionId, taskId)
+
+        @mcp.tool(name="leo_control_fingerprint_scan", annotations=DESTRUCTIVE)
+        async def control_fingerprint_scan(
+            sessionId: Identifier,
+            taskId: Identifier,
+            action: ScanAction,
+        ) -> dict[str, object]:
+            """Pause, resume, or stop one explicit fingerprint-scan task."""
+            return await tools.control_fingerprint_scan(sessionId, taskId, action)
+
+        @mcp.tool(name="leo_start_recon_scan", annotations=ACTION)
+        async def start_recon_scan(
+            sessionId: Identifier,
+            targets: ScanTargets,
+            ruleSelector: ReconRuleSelector | None = None,
+            threads: ScanThreads = 10,
+        ) -> dict[str, object]:
+            """Start one bounded reconnaissance scan with a structured rule selector."""
+            selector = ruleSelector.model_dump(exclude_none=True) if ruleSelector is not None else None
+            return await tools.start_recon_scan(
+                sessionId,
+                [target.model_dump() for target in targets],
+                selector,
+                threads,
+            )
+
+        @mcp.tool(name="leo_query_recon_scan", annotations=READ_ONLY)
+        async def query_recon_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
+            """Query one explicit asynchronous reconnaissance-scan task."""
+            return await tools.query_recon_scan(sessionId, taskId)
+
+        @mcp.tool(name="leo_control_recon_scan", annotations=DESTRUCTIVE)
+        async def control_recon_scan(
+            sessionId: Identifier,
+            taskId: Identifier,
+            action: ScanAction,
+        ) -> dict[str, object]:
+            """Pause, resume, or stop one explicit reconnaissance-scan task."""
+            return await tools.control_recon_scan(sessionId, taskId, action)
 
         @mcp.tool(name="leo_get_docker_info", annotations=READ_ONLY)
         async def get_docker_info(sessionId: Identifier) -> dict[str, object]:
