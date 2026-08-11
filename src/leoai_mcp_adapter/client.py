@@ -66,9 +66,13 @@ class LeoAIClient:
                     content.extend(chunk)
                     if len(content) > self._max_response_bytes:
                         raise _response_too_large()
+                headers = response.headers.copy()
+                for name in ("content-encoding", "content-length", "transfer-encoding"):
+                    if name in headers:
+                        del headers[name]
                 return httpx.Response(
                     response.status_code,
-                    headers=response.headers,
+                    headers=headers,
                     content=bytes(content),
                     request=response.request,
                 )
@@ -96,7 +100,12 @@ class LeoAIClient:
                         "password": self._settings.leoai_password.get_secret_value(),
                     },
                 )
-                _response_data(response, authenticating=True)
+                authentication = _response_data(response, authenticating=True)
+                if isinstance(authentication, dict) and authentication.get("passwordChangeRequired") is True:
+                    raise LeoAIError(
+                        "leoai_auth_failed",
+                        "LeoAI account requires a password change",
+                    )
                 if not any(cookie.name == "JSESSIONID" for cookie in response.cookies.jar):
                     raise LeoAIError(
                         "leoai_auth_failed",
@@ -110,6 +119,13 @@ class LeoAIClient:
 
 
 def _response_data(response: httpx.Response, *, authenticating: bool = False) -> Any:
+    if "text/html" in response.headers.get("content-type", "").lower():
+        if authenticating:
+            raise LeoAIError("leoai_auth_failed", "LeoAI authentication failed")
+        raise LeoAIError(
+            "leoai_capability_unsupported",
+            "LeoAI endpoint is not available in this release",
+        )
     try:
         payload = response.json()
     except ValueError as exc:
@@ -146,6 +162,9 @@ def _response_code(response: httpx.Response, payload: dict[str, Any]) -> int:
 
 def _mapped_error(code: int, raw_message: object) -> tuple[str, str, bool]:
     message = str(raw_message or "LeoAI request failed")
+    normalized_message = message.lower()
+    if code == 405 or "not supported" in normalized_message or "不支持" in message:
+        return ("leoai_capability_unsupported", "LeoAI endpoint is not available in this release", False)
     if code == 401:
         return ("leoai_session_expired", "LeoAI session expired", True)
     if code == 403:

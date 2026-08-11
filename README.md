@@ -6,9 +6,17 @@ query tools for clients such as PoJun without embedding LeoAI, forking its Agent
 loop, or providing arbitrary HTTP forwarding.
 
 The implementation targets the LeoAI `main` API at commit
-`6fb4de979db23de4fa8b23e5ed6a98c710a82fda`. Local protocol and contract tests
-are complete; validation against a deployed LeoAI instance and PoJun Docker
-Runtime remains an environment-level release gate.
+`6fb4de979db23de4fa8b23e5ed6a98c710a82fda`. Local protocol and contract tests,
+plus a live LeoAI `1.0.1` PHP Puppet session matrix, are complete. PoJun Docker
+Runtime validation remains an environment-level release gate.
+
+LeoAI `1.0.1` does not contain the newer Project API. On that release,
+`leo_list_projects` and `leo_list_project_puppets` return
+`leoai_capability_unsupported`; the Session and File tools remain available.
+The adapter derives filesystem path semantics from the older root-list API when
+the explicit profile endpoint is absent. Accounts that still require their
+initial password change are reported as not ready and must be updated in LeoAI
+before use.
 
 ## Tools
 

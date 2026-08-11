@@ -27,7 +27,17 @@ class LeoAITools:
         }
 
     async def list_project_puppets(self, project_id: str) -> dict[str, object]:
-        data = await self._request("GET", f"/platform/projects/{project_id}/puppets")
+        try:
+            data = await self._request("GET", f"/platform/projects/{project_id}/puppets")
+        except LeoAIError as error:
+            if error.code != "leoai_permission_denied":
+                raise
+            try:
+                await self._request("GET", "/platform/projects")
+            except LeoAIError as probe_error:
+                if probe_error.code == "leoai_capability_unsupported":
+                    raise probe_error from error
+            raise
         if not isinstance(data, list):
             raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid Puppet list")
         return {
@@ -116,11 +126,21 @@ class LeoAITools:
         }
 
     async def get_file_profile(self, session_id: str) -> dict[str, object]:
-        data = await self._request(
-            "POST",
-            "/puppet-node/file/profile",
-            json={"sessionId": session_id},
-        )
+        try:
+            data = await self._request(
+                "POST",
+                "/puppet-node/file/profile",
+                json={"sessionId": session_id},
+            )
+        except LeoAIError as error:
+            if error.code != "leoai_capability_unsupported":
+                raise
+            root_listing = await self._request(
+                "POST",
+                "/puppet-node/file/list-root",
+                json={"sessionId": session_id},
+            )
+            data = _profile_from_root_listing(root_listing)
         if not isinstance(data, dict):
             raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid filesystem profile")
         return {
@@ -269,6 +289,32 @@ def _file_summary(value: Any) -> dict[str, object]:
         "exists",
         "extension",
     )
+
+
+def _profile_from_root_listing(value: Any) -> dict[str, object]:
+    if not isinstance(value, dict) or not isinstance(value.get("fileList"), list):
+        raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid root directory listing")
+    roots = []
+    for item in value["fileList"]:
+        if not isinstance(item, dict) or item.get("isDirectory") is not True:
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and path and path not in roots:
+            roots.append(path)
+    if not roots:
+        absolute_path = value.get("absolutePath")
+        if isinstance(absolute_path, str) and absolute_path:
+            roots.append(absolute_path)
+    if not roots:
+        raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid root directory listing")
+    windows = any(len(root) >= 3 and root[0].isalpha() and root[1] == ":" and root[2] in {"/", "\\"} for root in roots)
+    return {
+        "osFamily": "WINDOWS" if windows else "POSIX",
+        "pathStyle": "WINDOWS" if windows else "POSIX",
+        "separator": "\\" if windows else "/",
+        "caseSensitivity": "INSENSITIVE" if windows else "SENSITIVE",
+        "roots": roots,
+    }
 
 
 def _pick(source: dict[str, Any], *fields: str) -> dict[str, object]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 
 import httpx
@@ -44,6 +45,85 @@ async def test_client_logs_in_before_calling_leoai_and_reuses_the_session_cookie
         ("POST", "/platform/user/login"),
         ("GET", "/platform/projects"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_client_accepts_gzip_encoded_leoai_responses():
+    payload = gzip.compress(json.dumps({"code": 200, "msg": "success"}).encode())
+
+    def upstream(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=payload,
+            headers={
+                "content-encoding": "gzip",
+                "set-cookie": "JSESSIONID=session-1; Path=/; HttpOnly",
+            },
+        )
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("correct horse"),
+        mcp_client_token=SecretStr("adapter-token"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        await client.check_ready()
+
+
+@pytest.mark.asyncio
+async def test_client_reports_missing_html_fallback_route_as_unsupported():
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": "JSESSIONID=session-1; Path=/; HttpOnly"},
+            )
+        return httpx.Response(200, text="<!doctype html><title>LeoAI</title>", headers={"content-type": "text/html"})
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("correct horse"),
+        mcp_client_token=SecretStr("adapter-token"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        with pytest.raises(LeoAIError) as error:
+            await client.request("GET", "/platform/projects")
+
+    assert error.value.code == "leoai_capability_unsupported"
+    assert error.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_client_maps_method_not_supported_to_capability_error():
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": "JSESSIONID=session-1; Path=/; HttpOnly"},
+            )
+        return httpx.Response(500, json={"code": 500, "msg": "Request method 'POST' is not supported"})
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("correct horse"),
+        mcp_client_token=SecretStr("adapter-token"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        with pytest.raises(LeoAIError) as error:
+            await client.request("POST", "/puppet-node/file/profile", json={"sessionId": "s-1"})
+
+    assert error.value.code == "leoai_capability_unsupported"
 
 
 @pytest.mark.asyncio
@@ -271,6 +351,35 @@ async def test_login_business_success_without_jsessionid_is_not_ready():
 
     assert error.value.code == "leoai_auth_failed"
     assert error.value.message == "LeoAI authentication did not establish a session"
+
+
+@pytest.mark.asyncio
+async def test_login_requiring_password_change_is_not_ready():
+    def upstream(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "msg": "success",
+                "data": {"passwordChangeRequired": True},
+            },
+            headers={"set-cookie": "JSESSIONID=session-1; Path=/; HttpOnly"},
+        )
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("correct horse"),
+        mcp_client_token=SecretStr("adapter-token"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        with pytest.raises(LeoAIError) as error:
+            await client.check_ready()
+
+    assert error.value.code == "leoai_auth_failed"
+    assert error.value.message == "LeoAI account requires a password change"
 
 
 @pytest.mark.asyncio

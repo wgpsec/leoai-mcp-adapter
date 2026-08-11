@@ -25,17 +25,22 @@ def _settings() -> Settings:
 
 
 @asynccontextmanager
+async def _mcp_connection(app) -> AsyncIterator[ClientSession]:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://localhost",
+        headers={"authorization": "Bearer adapter-token"},
+    ) as http_client:
+        async with streamable_http_client("http://localhost/mcp", http_client=http_client) as streams:
+            async with ClientSession(streams[0], streams[1]) as session:
+                await session.initialize()
+                yield session
+
+
+@asynccontextmanager
 async def _mcp_session(app) -> AsyncIterator[ClientSession]:
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://localhost",
-            headers={"authorization": "Bearer adapter-token"},
-        ) as http_client:
-            async with streamable_http_client("http://localhost/mcp", http_client=http_client) as streams:
-                async with ClientSession(streams[0], streams[1]) as session:
-                    await session.initialize()
-                    yield session
+    async with app.router.lifespan_context(app), _mcp_connection(app) as session:
+        yield session
 
 
 @pytest.mark.asyncio
@@ -124,6 +129,33 @@ async def test_standard_mcp_client_lists_only_the_initial_allowlisted_tools():
         "leo_get_file_profile",
         "leo_list_files",
     }
+
+
+@pytest.mark.asyncio
+async def test_sequential_mcp_sessions_share_the_live_leoai_client():
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": "JSESSIONID=session-1; Path=/; HttpOnly"},
+            )
+        assert request.url.path == "/platform/session/sessions"
+        return httpx.Response(200, json={"code": 200, "msg": "success", "data": []})
+
+    settings = _settings()
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+
+    async with app.router.lifespan_context(app):
+        async with _mcp_connection(app) as first_session:
+            first = await first_session.call_tool("leo_list_sessions")
+        async with _mcp_connection(app) as second_session:
+            second = await second_session.call_tool("leo_list_sessions")
+
+    assert first.isError is False
+    assert second.isError is False
+    assert leoai._http.is_closed
 
 
 @pytest.mark.asyncio
@@ -247,6 +279,31 @@ async def test_list_project_puppets_omits_connection_and_identity_secrets():
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_list_project_puppets_reports_unsupported_when_release_has_no_project_routes():
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": "JSESSIONID=private-cookie; Path=/; HttpOnly"},
+            )
+        if request.url.path == "/platform/projects/project-1/puppets":
+            return httpx.Response(403, json={"code": 403, "msg": "禁止访问"})
+        assert request.url.path == "/platform/projects"
+        return httpx.Response(200, text="<!doctype html><title>LeoAI</title>", headers={"content-type": "text/html"})
+
+    settings = _settings()
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+
+    async with _mcp_session(app) as session:
+        result = await session.call_tool("leo_list_project_puppets", {"projectId": "project-1"})
+
+    assert result.isError is True
+    assert "leoai_capability_unsupported" in result.content[0].text
 
 
 @pytest.mark.asyncio
@@ -532,6 +589,67 @@ async def test_get_file_profile_returns_only_filesystem_semantics():
             "capabilities": {"posixMode": True, "rangeRead": True},
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_get_file_profile_falls_back_to_old_release_root_listing():
+    observed: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(
+                200,
+                json={"code": 200, "msg": "success"},
+                headers={"set-cookie": "JSESSIONID=private-cookie; Path=/; HttpOnly"},
+            )
+        observed.append(request.url.path)
+        if request.url.path == "/puppet-node/file/profile":
+            return httpx.Response(
+                500,
+                json={"code": 500, "msg": "Request method 'POST' is not supported"},
+            )
+        assert request.url.path == "/puppet-node/file/list-root"
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "msg": "success",
+                "data": {
+                    "absolutePath": "/",
+                    "count": 1,
+                    "fileList": [
+                        {
+                            "name": "/",
+                            "path": "/",
+                            "isDirectory": True,
+                        }
+                    ],
+                },
+            },
+        )
+
+    settings = _settings()
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+
+    async with _mcp_session(app) as session:
+        result = await session.call_tool("leo_get_file_profile", {"sessionId": "session-1"})
+
+    assert result.isError is False
+    assert result.structuredContent == {
+        "untrusted_external_content": True,
+        "fileProfile": {
+            "osFamily": "POSIX",
+            "pathStyle": "POSIX",
+            "separator": "/",
+            "caseSensitivity": "SENSITIVE",
+            "roots": ["/"],
+        },
+    }
+    assert observed == [
+        "/puppet-node/file/profile",
+        "/puppet-node/file/list-root",
+    ]
 
 
 @pytest.mark.asyncio

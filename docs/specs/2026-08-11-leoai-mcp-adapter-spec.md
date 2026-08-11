@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：Implemented，待真实 LeoAI 与 PoJun Docker Runtime 集成验证
+- 状态：Implemented，已通过 LeoAI 1.0.1 真实 Session 验证，待 PoJun Docker Runtime 集成验证
 - 日期：2026-08-11
 - 仓库：`leoai-mcp-adapter`
 - 上游：[cha0upup/LeoAI](https://github.com/cha0upup/LeoAI)
@@ -347,9 +347,9 @@ LeoAI API 或响应结构变化时，通过 contract fixtures 固定兼容范围
 
 ## 11. 验收标准
 
-当前已通过本地配置、LeoAI mock contract 与标准 MCP Streamable HTTP 客户端
-测试。真实 LeoAI 权限矩阵、PoJun Docker Runtime、Claude-compatible/Codex 和
-OODA continuation 回放仍是发布前验证项，不因本地测试通过而视为已完成。
+当前已通过本地配置、LeoAI mock contract、标准 MCP Streamable HTTP 客户端和
+LeoAI 1.0.1 真实 PHP Puppet Session 测试。PoJun Docker Runtime、Claude-compatible/
+Codex 和 OODA continuation 回放仍是发布前验证项。
 
 - PoJun Docker Runtime 无需修改 Agent 镜像即可连接 adapter；
 - 未认证 MCP 请求全部拒绝，且错误不泄露配置；
@@ -362,6 +362,23 @@ OODA continuation 回放仍是发布前验证项，不因本地测试通过而�
 - 恶意摘要、主机名和目录内容只能作为不可信数据返回；
 - 真实 PoJun OODA、Playwright、context1337、其他 MCP 和 Agent session 行为不变；
 - adapter 停用或删除 MCP 配置后，不影响 PoJun 其他 Backend 与 Project。
+
+### 11.1 LeoAI 1.0.1 真实验证结论
+
+2026-08-11 在一次性 LeoAI 1.0.1 节点上完成真实登录、PHP Puppet、Session 和 MCP
+回放。验证使用合成 `/tmp` canary，不读取节点真实凭据：
+
+- gzip 登录响应、`JSESSIONID`、`/readyz` 和连续两个 MCP Session 通过；
+- Session 列表、能力、当前主机、基础信息、侦察摘要、目录列表通过；
+- 默认关闭的文件读取开启后，通过 16 字节边界、截断标记和 nextOffset 验证；
+- LeoAI 1.0.1 缺少 `/puppet-node/file/profile`，adapter 通过只读 `list-root`
+  推导 POSIX/Windows 路径语义，不伪造未知 capability；
+- LeoAI 1.0.1 尚无 Project API，两个 Project Tool 明确返回
+  `leoai_capability_unsupported`，不以空列表或虚假 Project 降级；
+- 初始账号的 `passwordChangeRequired=true` 会使 readiness 失败，需部署者先在
+  LeoAI 完成改密，adapter 不提供改密能力；
+- 真实回放发现并修复 gzip 二次解压与 MCP Session 结束后误关全局 HTTP Client
+  两个 adapter 缺陷。
 
 ## 12. 发布与回滚
 
@@ -389,6 +406,6 @@ OODA continuation 回放仍是发布前验证项，不因本地测试通过而�
 
 ## 14. 开放事项
 
-- 在部署环境中创建并手动交付专用低权限 LeoAI 账号密码；
-- 在真实 LeoAI release 上冻结第一组 contract fixtures；
+- 在部署环境中创建并手动交付专用低权限 LeoAI 账号密码；本次一次性验证使用管理员账号，不作为生产配置；
+- 完成 PoJun Docker Runtime、Claude-compatible/Codex 和 OODA continuation 回放；
 - 高影响 Tool 不属于本 spec 的实施范围，需要另行评审。
