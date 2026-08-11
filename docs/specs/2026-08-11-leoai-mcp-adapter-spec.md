@@ -2,7 +2,7 @@
 
 ## 状态
 
-- 状态：Phase 1、Phase 2.1、Phase 2.2a、Phase 2.2b 扫描批次 Implemented；Phase 2.2b 其余 Planned
+- 状态：Phase 1、Phase 2.1、Phase 2.2a、Phase 2.2b Implemented；Java Recon 上游兼容性待复核
 - 日期：2026-08-11
 - 仓库：`leoai-mcp-adapter`
 - 上游：[cha0upup/LeoAI](https://github.com/cha0upup/LeoAI)
@@ -287,9 +287,24 @@ Phase 2.2b 第一批在相同档位补充扫描能力：
 指纹与侦察扫描依赖 `ComponentInvokeCapable`，PHP Puppet 不支持时明确返回 capability
 unsupported，不伪造降级结果。
 
-服务创建/删除与开机自启属于持久化，不进入 `operate`。Phase 2.2b 后续按真实上游
-契约补充结构化数据库操作、文件传输和已安装插件白名单调用。每项能力必须是固定
-endpoint 和严格 schema，不能退化为通用请求工具。
+Phase 2.2b 后续批次已按真实上游契约实现：
+
+- 数据库仅接受 LeoAI 中已保存且由服务端校验 Puppet 归属的 `connectionId`，提供方言、
+  Runtime 能力、数据库/表/字段元数据、结构化分页查询和行级 insert/update/delete；
+- 不提供 raw SQL、inline password/JDBC/DSN、建库或建表 Tool；update/delete 必须至少有
+  一个结构化 filter，避免空条件全表变更；
+- 文件上传源仅接受无 `..` 的相对 LeoAI VFS 路径，分块最多 1 MiB；下载线程最多 16，
+  MCP 只返回任务元数据，不返回下载文件内容；
+- 上传与下载均提供 start/query/control/list 固定生命周期；start 缺少非空 `taskId` 时
+  fail-closed；
+- 已安装插件只通过 `/puppet-node/plugin/invoke` 调用。Tool 仅在部署者配置非空
+  `MCP_ALLOWED_PLUGIN_IDS` 时注册，并在请求前再次校验 ID；不开放插件创建、上传、
+  Java 专用入口或动态加载。
+
+数据库变更/连接测试、传输 start/control 和插件调用均按 Action 处理，认证过期不得
+重放；数据库元数据/查询与传输进度/list 可以重登后重试一次。服务创建/删除与开机
+自启仍属于持久化，不进入 `operate`。所有能力均为固定 endpoint 和严格 schema，不能
+退化为通用请求工具。
 
 终端采用 LeoAI 现有有状态协议，不由 adapter 猜测命令何时完成。Agent 必须先
 打开 terminal，再写入命令、按需读取，并在结束时 stop；一次调用的输入和响应均
@@ -500,7 +515,7 @@ Action Tool 回放：
 2026-08-11 使用相同 LeoAI 1.0.1 节点、新生成的临时 Java/PHP Puppet 和 loopback
 目标完成扫描回放：
 
-- 当前 `operate` 注册 49 个显式 Tool；开启可选文件读取后为 50 个；
+- 扫描批次完成时 `operate` 注册 49 个显式 Tool；开启可选文件读取后为 50 个；
 - PHP 的主机可达性、端口扫描 start/query/stop 全部通过；
 - PHP 指纹和侦察扫描由上游按 capability 拒绝，adapter 不降级成其他执行入口；
 - Java 的主机可达性、端口扫描 start/query、指纹扫描 start/query/stop 全部通过；
@@ -524,12 +539,9 @@ Action Tool 回放：
 ## 13. 后续阶段门槛
 
 Phase 2.2a 已在 `operate` 中实现进程、服务、网络连接和 Docker 工具。Phase 2.2b
-扫描批次已实现，当前 `operate` 注册 49 个 Tool，开启可选文件读取后为 50 个。
-Phase 2.2b 继续实现以下显式能力：
-
-- 结构化数据库查询与变更；
-- 有界文件上传/下载任务；
-- 部署者白名单内的既有插件调用。
+已实现扫描、结构化数据库查询与行级变更、有界文件上传/下载任务，以及部署者
+allowlist 内的既有插件调用。allowlist 为空时 `operate` 注册 67 个 Tool，开启可选
+文件读取后为 68 个；非空插件 allowlist 会再注册一个固定插件调用 Tool。
 
 以下 `privileged` 能力必须逐项形成独立安全设计，不能因启用 `operate` 自动获得：
 
@@ -549,4 +561,4 @@ Phase 2.2b 继续实现以下显式能力：
 - 在部署环境中创建并手动交付专用低权限 LeoAI 账号密码；本次一次性验证使用管理员账号，不作为生产配置；
 - 完成 PoJun Docker Runtime、Claude-compatible/Codex 和 OODA continuation 回放；
 - 使用正式部署的 Java Puppet 复核 Recon `requestId` 兼容问题；
-- Phase 2.2b 其余批次和 `privileged` Tool 按本 spec 的分层边界继续逐组设计与评审。
+- `privileged` Tool 按本 spec 的分层边界继续逐组设计与评审。

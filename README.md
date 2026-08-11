@@ -5,7 +5,7 @@ A standalone Streamable HTTP MCP adapter for
 tools for clients such as PoJun without embedding LeoAI, forking its Agent loop,
 or providing arbitrary HTTP forwarding. The default `observe` profile is
 read-only; the opt-in `operate` profile adds audited Session, terminal, file,
-system, Docker, and bounded scan actions.
+system, Docker, bounded scan, structured database, and file-transfer actions.
 
 The implementation targets the LeoAI `main` API at commit
 `6fb4de979db23de4fa8b23e5ed6a98c710a82fda`. Local protocol and contract tests,
@@ -54,12 +54,26 @@ Set `MCP_TOOL_PROFILE=operate` to additionally register:
 - `leo_start_port_scan` / `leo_query_port_scan` / `leo_control_port_scan`
 - `leo_start_fingerprint_scan` / `leo_query_fingerprint_scan` / `leo_control_fingerprint_scan`
 - `leo_start_recon_scan` / `leo_query_recon_scan` / `leo_control_recon_scan`
+- database dialect/capability/metadata/table-query tools using saved LeoAI connections
+- structured database row test/insert/update/delete tools; no raw SQL tool
+- bounded upload/download start/query/control/list task tools
 - Docker info/list/inspect/logs/exec/control/remove tools with fixed endpoints
+
+When `MCP_ALLOWED_PLUGIN_IDS` is nonempty, `operate` also registers
+`leo_invoke_allowed_plugin`. The ID must be present in the deployment-side
+allowlist and refer to a plugin already installed in LeoAI. The adapter never
+creates, uploads, or dynamically loads plugins.
 
 Scan starts and controls are actions and are never replayed after an expired
 LeoAI login. Scan queries may reauthenticate and retry once. Fingerprint and
 recon targets accept only structured HTTP or TCP forms; fingerprint and recon
 scans require a Java Puppet with component invocation support.
+Database tools accept only a saved `connectionId`; credentials and arbitrary
+connection strings are not MCP inputs. File upload sources are relative LeoAI
+VFS paths without parent traversal, and downloads return task metadata rather
+than downloaded file contents. Database changes, transfer starts/controls, and
+plugin invocations are actions and are never replayed after authentication
+expiry; metadata and task queries may retry once.
 
 The future `privileged` profile is reserved for separately designed high-impact
 capabilities. Generic request forwarding is never exposed.
@@ -85,6 +99,7 @@ They are never MCP tool arguments.
 | `MCP_ENABLE_FILE_READ` | `false` | Register the optional file read tool |
 | `MCP_MAX_FILE_BYTES` | `262144` | Maximum bytes per optional file read |
 | `MCP_MAX_FILE_WRITE_BYTES` | `262144` | Maximum UTF-8 bytes per file create/edit action |
+| `MCP_ALLOWED_PLUGIN_IDS` | empty | Comma-separated installed plugin IDs allowed for invocation |
 | `MCP_BIND_HOST` | `127.0.0.1` | HTTP bind address |
 | `MCP_BIND_PORT` | `8000` | HTTP bind port |
 | `MCP_ALLOWED_HOSTS` | localhost only | Comma-separated HTTP Host allowlist |

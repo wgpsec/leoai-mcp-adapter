@@ -47,11 +47,29 @@ def test_settings_loads_operate_profile_and_bounded_file_write_limit(tmp_path):
             "MCP_CLIENT_TOKEN_FILE": os.fspath(token_file),
             "MCP_TOOL_PROFILE": "operate",
             "MCP_MAX_FILE_WRITE_BYTES": "131072",
+            "MCP_ALLOWED_PLUGIN_IDS": "plugin-safe,plugin-report,plugin-safe",
         }
     )
 
     assert settings.mcp_tool_profile == "operate"
     assert settings.mcp_max_file_write_bytes == 131072
+    assert settings.mcp_allowed_plugin_ids == ("plugin-safe", "plugin-report")
+
+
+def test_settings_rejects_invalid_plugin_allowlist_ids(tmp_path):
+    password_file = _secret_file(tmp_path, "leoai-password", "secret")
+    token_file = _secret_file(tmp_path, "mcp-token", "token")
+
+    with pytest.raises(SettingsError, match="MCP_ALLOWED_PLUGIN_IDS"):
+        Settings.from_env(
+            {
+                "LEOAI_BASE_URL": "https://leoai.internal",
+                "LEOAI_USERNAME": "operator",
+                "LEOAI_PASSWORD_FILE": os.fspath(password_file),
+                "MCP_CLIENT_TOKEN_FILE": os.fspath(token_file),
+                "MCP_ALLOWED_PLUGIN_IDS": "plugin-safe,../../other",
+            }
+        )
 
 
 def test_settings_rejects_unknown_tool_profile(tmp_path):

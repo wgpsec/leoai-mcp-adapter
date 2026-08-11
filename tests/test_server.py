@@ -180,6 +180,24 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
         "leo_start_recon_scan",
         "leo_query_recon_scan",
         "leo_control_recon_scan",
+        "leo_list_database_dialects",
+        "leo_get_database_runtime_capabilities",
+        "leo_list_databases",
+        "leo_list_database_tables",
+        "leo_list_database_columns",
+        "leo_query_database_table",
+        "leo_test_database_connection",
+        "leo_insert_database_row",
+        "leo_update_database_rows",
+        "leo_delete_database_rows",
+        "leo_start_file_upload",
+        "leo_query_file_upload",
+        "leo_control_file_upload",
+        "leo_list_file_upload_tasks",
+        "leo_start_file_download",
+        "leo_query_file_download",
+        "leo_control_file_download",
+        "leo_list_file_download_tasks",
         "leo_get_docker_info",
         "leo_list_docker_containers",
         "leo_list_docker_images",
@@ -193,7 +211,8 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
     }.issubset(names)
     assert "leo_request" not in names
     assert "leo_invoke" not in names
-    assert len(names) == 49
+    assert "leo_invoke_allowed_plugin" not in names
+    assert len(names) == 67
 
 
 @pytest.mark.asyncio
@@ -949,6 +968,556 @@ async def test_scan_queries_may_reauthenticate_but_scan_actions_are_never_replay
     assert calls.count("/puppet-node/port-scan/start-scan") == 1
     assert calls.count("/puppet-node/port-scan/query-result") == 2
     assert calls.count("/puppet-node/port-scan/stop-scan") == 1
+
+
+@pytest.mark.asyncio
+async def test_operate_queries_database_metadata_and_rows_through_saved_connections():
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read()) if request.content else None
+        requests.append((request.method, request.url.path, payload))
+        return httpx.Response(
+            200,
+            json={
+                "code": 200,
+                "data": {
+                    "rows": [{"id": 1, "name": "canary"}],
+                    "password": "must-not-leak",
+                },
+            },
+        )
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        dialects = await session.call_tool("leo_list_database_dialects", {})
+        queried = await session.call_tool(
+            "leo_query_database_table",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": {"catalog": "app", "schema": "public", "name": "users"},
+                "page": 2,
+                "pageSize": 25,
+                "columns": ["id", "name"],
+                "orderBy": [{"field": "id", "direction": "desc"}],
+                "filters": [{"field": "name", "operator": "eq", "value": "canary"}],
+                "includeTotal": True,
+                "queryTimeoutSeconds": 10,
+            },
+        )
+    await leoai.aclose()
+
+    assert dialects.isError is False
+    assert queried.isError is False
+    assert "password" not in json.dumps(queried.structuredContent)
+    assert requests == [
+        ("GET", "/puppet-node/sql/dialects", None),
+        (
+            "POST",
+            "/puppet-node/sql/data/query-table",
+            {
+                "sessionId": "session-1",
+                "connection": {"connectionId": "connection-1"},
+                "objectRef": {"catalog": "app", "schema": "public", "name": "users", "kind": "table"},
+                "page": 2,
+                "pageSize": 25,
+                "columns": ["id", "name"],
+                "orderBy": [{"field": "id", "direction": "desc"}],
+                "filters": [{"field": "name", "operator": "eq", "value": "canary"}],
+                "includeTotal": True,
+                "queryTimeoutSeconds": 10,
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operate_database_metadata_tools_use_only_fixed_saved_connection_endpoints():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"items": [], "apiKey": "hidden"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        results = [
+            await session.call_tool(
+                "leo_get_database_runtime_capabilities",
+                {"sessionId": "session-1", "connectionId": "connection-1"},
+            ),
+            await session.call_tool(
+                "leo_list_databases",
+                {"sessionId": "session-1", "connectionId": "connection-1"},
+            ),
+            await session.call_tool(
+                "leo_list_database_tables",
+                {
+                    "sessionId": "session-1",
+                    "connectionId": "connection-1",
+                    "namespace": {"catalog": "app", "schema": "public"},
+                },
+            ),
+            await session.call_tool(
+                "leo_list_database_columns",
+                {
+                    "sessionId": "session-1",
+                    "connectionId": "connection-1",
+                    "table": {"catalog": "app", "schema": "public", "name": "users"},
+                },
+            ),
+        ]
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in results)
+    assert all("apiKey" not in json.dumps(result.structuredContent) for result in results)
+    connection = {"connectionId": "connection-1"}
+    assert requests == [
+        ("/puppet-node/sql/runtime-capabilities", {"sessionId": "session-1", "connection": connection}),
+        ("/puppet-node/sql/metadata/databases", {"sessionId": "session-1", "connection": connection}),
+        (
+            "/puppet-node/sql/metadata/tables",
+            {
+                "sessionId": "session-1",
+                "connection": connection,
+                "objectRef": {"catalog": "app", "schema": "public"},
+            },
+        ),
+        (
+            "/puppet-node/sql/metadata/table-columns",
+            {
+                "sessionId": "session-1",
+                "connection": connection,
+                "objectRef": {"catalog": "app", "schema": "public", "name": "users", "kind": "table"},
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operate_database_row_changes_are_structured_bounded_actions():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"affectedRows": 1, "token": "hidden"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    table = {"schema": "public", "name": "users"}
+    async with _mcp_session(app) as session:
+        tested = await session.call_tool(
+            "leo_test_database_connection",
+            {"sessionId": "session-1", "connectionId": "connection-1"},
+        )
+        inserted = await session.call_tool(
+            "leo_insert_database_row",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "row": {"name": "canary", "enabled": True},
+            },
+        )
+        updated = await session.call_tool(
+            "leo_update_database_rows",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "where": {"filters": [{"field": "name", "operator": "eq", "value": "canary"}]},
+                "update": {"enabled": False},
+            },
+        )
+        deleted = await session.call_tool(
+            "leo_delete_database_rows",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "where": {"filters": [{"field": "name", "operator": "eq", "value": "canary"}]},
+            },
+        )
+        unbounded = await session.call_tool(
+            "leo_delete_database_rows",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "where": {"filters": []},
+            },
+        )
+        oversized = await session.call_tool(
+            "leo_insert_database_row",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "row": {"name": "x" * 4097},
+            },
+        )
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in (tested, inserted, updated, deleted))
+    assert unbounded.isError is True
+    assert oversized.isError is True
+    assert all("token" not in json.dumps(result.structuredContent) for result in (tested, inserted, updated, deleted))
+    base_payload = {
+        "sessionId": "session-1",
+        "connection": {"connectionId": "connection-1"},
+    }
+    object_ref = {"schema": "public", "name": "users", "kind": "table"}
+    where = {"filters": [{"field": "name", "operator": "eq", "value": "canary"}]}
+    assert requests == [
+        ("/puppet-node/sql/connections/test", base_payload),
+        (
+            "/puppet-node/sql/rows/insert",
+            base_payload | {"objectRef": object_ref, "row": {"name": "canary", "enabled": True}},
+        ),
+        (
+            "/puppet-node/sql/rows/update",
+            base_payload | {"objectRef": object_ref, "where": where, "update": {"enabled": False}},
+        ),
+        ("/puppet-node/sql/rows/delete", base_payload | {"objectRef": object_ref, "where": where}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operate_file_upload_has_a_bounded_task_lifecycle():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(
+            200,
+            json={"code": 200, "data": {"taskId": "upload-1", "status": "RUNNING", "cookie": "hidden"}},
+        )
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        started = await session.call_tool(
+            "leo_start_file_upload",
+            {
+                "sessionId": "session-1",
+                "vfsPath": "users/operator/payload.bin",
+                "filePath": "/tmp/payload.bin",
+                "chunkSize": 262144,
+            },
+        )
+        queried = await session.call_tool(
+            "leo_query_file_upload",
+            {"taskId": "upload-1"},
+        )
+        controlled = [
+            await session.call_tool(
+                "leo_control_file_upload",
+                {"sessionId": "session-1", "taskId": "upload-1", "action": action},
+            )
+            for action in ("pause", "resume", "cancel", "retry", "remove")
+        ]
+        listed = await session.call_tool(
+            "leo_list_file_upload_tasks",
+            {"sessionId": "session-1"},
+        )
+        traversal = await session.call_tool(
+            "leo_start_file_upload",
+            {
+                "sessionId": "session-1",
+                "vfsPath": "users/operator/../admin/secret",
+                "filePath": "/tmp/secret",
+            },
+        )
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in (started, queried, listed, *controlled))
+    assert traversal.isError is True
+    assert "cookie" not in json.dumps(started.structuredContent)
+    assert requests == [
+        (
+            "/puppet-node/file/upload-engine/start",
+            {
+                "sessionId": "session-1",
+                "vfsPath": "users/operator/payload.bin",
+                "filePath": "/tmp/payload.bin",
+                "chunkSize": 262144,
+            },
+        ),
+        ("/puppet-node/file/upload-engine/progress", {"taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/pause", {"taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/resume", {"sessionId": "session-1", "taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/cancel", {"taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/retry", {"sessionId": "session-1", "taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/remove", {"taskId": "upload-1"}),
+        ("/puppet-node/file/upload-engine/tasks", {"sessionId": "session-1"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operate_file_download_has_bounded_threads_and_fixed_task_controls():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"taskId": "download-1", "status": "RUNNING"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        started = await session.call_tool(
+            "leo_start_file_download",
+            {
+                "sessionId": "session-1",
+                "filePath": "/var/log/canary.log",
+                "threads": 8,
+                "chunkSize": 524288,
+            },
+        )
+        queried = await session.call_tool(
+            "leo_query_file_download",
+            {"taskId": "download-1"},
+        )
+        removed = await session.call_tool(
+            "leo_control_file_download",
+            {"sessionId": "session-1", "taskId": "download-1", "action": "remove"},
+        )
+        listed = await session.call_tool(
+            "leo_list_file_download_tasks",
+            {"sessionId": "session-1"},
+        )
+        invalid = await session.call_tool(
+            "leo_start_file_download",
+            {
+                "sessionId": "session-1",
+                "filePath": "/var/log/canary.log",
+                "threads": 17,
+            },
+        )
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in (started, queried, removed, listed))
+    assert invalid.isError is True
+    assert requests == [
+        (
+            "/puppet-node/file/download-engine/start",
+            {
+                "sessionId": "session-1",
+                "filePath": "/var/log/canary.log",
+                "threads": 8,
+                "chunkSize": 524288,
+            },
+        ),
+        ("/puppet-node/file/download-engine/progress", {"taskId": "download-1"}),
+        ("/puppet-node/file/download-engine/remove", {"taskId": "download-1"}),
+        ("/puppet-node/file/download-engine/tasks", {"sessionId": "session-1"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_operate_invokes_only_deployment_allowlisted_plugins_with_bounded_parameters():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"result": "ok", "password": "hidden"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+        mcp_allowed_plugin_ids=("plugin-safe",),
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        result = await session.call_tool(
+            "leo_invoke_allowed_plugin",
+            {
+                "sessionId": "session-1",
+                "pluginId": "plugin-safe",
+                "pluginParam": {"target": "canary", "limit": 10},
+            },
+        )
+        denied = await session.call_tool(
+            "leo_invoke_allowed_plugin",
+            {"sessionId": "session-1", "pluginId": "plugin-other", "pluginParam": {}},
+        )
+        oversized = await session.call_tool(
+            "leo_invoke_allowed_plugin",
+            {
+                "sessionId": "session-1",
+                "pluginId": "plugin-safe",
+                "pluginParam": {"target": "x" * 300},
+            },
+        )
+    await leoai.aclose()
+
+    assert result.isError is False
+    assert denied.isError is True
+    assert oversized.isError is True
+    assert "password" not in json.dumps(result.structuredContent)
+    assert requests == [
+        (
+            "/puppet-node/plugin/invoke",
+            {
+                "sessionId": "session-1",
+                "pluginId": "plugin-safe",
+                "pluginParam": {"target": "canary", "limit": 10},
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phase_2_2b_queries_may_reauthenticate_but_actions_are_never_replayed():
+    calls: list[str] = []
+    progress_attempts = 0
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal progress_attempts
+        calls.append(request.url.path)
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        if request.url.path == "/puppet-node/file/upload-engine/progress":
+            progress_attempts += 1
+            if progress_attempts == 2:
+                return httpx.Response(200, json={"code": 200, "data": {"taskId": "upload-1"}})
+        return httpx.Response(401, json={"code": 401, "msg": "expired"})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+        mcp_allowed_plugin_ids=("plugin-safe",),
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        upload = await session.call_tool(
+            "leo_start_file_upload",
+            {"sessionId": "session-1", "vfsPath": "users/operator/a", "filePath": "/tmp/a"},
+        )
+        progress = await session.call_tool(
+            "leo_query_file_upload",
+            {"taskId": "upload-1"},
+        )
+        insert = await session.call_tool(
+            "leo_insert_database_row",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": {"name": "canary"},
+                "row": {"id": 1},
+            },
+        )
+        plugin = await session.call_tool(
+            "leo_invoke_allowed_plugin",
+            {"sessionId": "session-1", "pluginId": "plugin-safe", "pluginParam": {}},
+        )
+    await leoai.aclose()
+
+    assert upload.isError is True
+    assert progress.isError is False
+    assert insert.isError is True
+    assert plugin.isError is True
+    assert calls.count("/puppet-node/file/upload-engine/start") == 1
+    assert calls.count("/puppet-node/file/upload-engine/progress") == 2
+    assert calls.count("/puppet-node/sql/rows/insert") == 1
+    assert calls.count("/puppet-node/plugin/invoke") == 1
+
+
+@pytest.mark.asyncio
+async def test_file_transfer_start_fails_closed_when_leoai_omits_the_task_id():
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        return httpx.Response(200, json={"code": 200, "data": {"status": "RUNNING"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        result = await session.call_tool(
+            "leo_start_file_download",
+            {"sessionId": "session-1", "filePath": "/tmp/a"},
+        )
+    await leoai.aclose()
+
+    assert result.isError is True
+    assert "leoai_protocol_error" in result.content[0].text
 
 
 @pytest.mark.asyncio

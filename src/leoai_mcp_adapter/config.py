@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class Settings:
     mcp_enable_file_read: bool = False
     mcp_max_file_bytes: int = 256 * 1024
     mcp_max_file_write_bytes: int = 256 * 1024
+    mcp_allowed_plugin_ids: tuple[str, ...] = ()
     mcp_bind_host: str = "127.0.0.1"
     mcp_bind_port: int = 8000
     mcp_allowed_hosts: tuple[str, ...] = _DEFAULT_ALLOWED_HOSTS
@@ -81,6 +83,7 @@ class Settings:
                 1,
                 2 * 1024 * 1024,
             ),
+            mcp_allowed_plugin_ids=_plugin_ids(env.get("MCP_ALLOWED_PLUGIN_IDS")),
             mcp_bind_host=str(env.get("MCP_BIND_HOST") or "127.0.0.1").strip(),
             mcp_bind_port=_integer(env, "MCP_BIND_PORT", 8000, 1, 65535),
             mcp_allowed_hosts=allowed_hosts,
@@ -148,3 +151,12 @@ def _float(env: Mapping[str, str], name: str, default: float, minimum: float, ma
     if not minimum <= value <= maximum:
         raise SettingsError(f"{name} must be between {minimum} and {maximum}")
     return value
+
+
+def _plugin_ids(raw_value: object) -> tuple[str, ...]:
+    values = tuple(dict.fromkeys(item.strip() for item in str(raw_value or "").split(",") if item.strip()))
+    if len(values) > 256:
+        raise SettingsError("MCP_ALLOWED_PLUGIN_IDS must contain at most 256 IDs")
+    if any(len(value) > 128 or re.fullmatch(r"[A-Za-z0-9._:-]+", value) is None for value in values):
+        raise SettingsError("MCP_ALLOWED_PLUGIN_IDS contains an invalid plugin ID")
+    return values

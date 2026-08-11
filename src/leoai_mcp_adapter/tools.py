@@ -17,11 +17,13 @@ class LeoAITools:
         max_concurrency: int,
         max_file_bytes: int,
         max_file_write_bytes: int,
+        allowed_plugin_ids: tuple[str, ...],
     ) -> None:
         self._client = client
         self._max_concurrency = max_concurrency
         self._max_file_bytes = max_file_bytes
         self._max_file_write_bytes = max_file_write_bytes
+        self._allowed_plugin_ids = frozenset(allowed_plugin_ids)
         self._active_requests = 0
         self._limit_lock = asyncio.Lock()
 
@@ -590,6 +592,195 @@ class LeoAITools:
             action,
         )
 
+    async def list_database_dialects(self) -> dict[str, object]:
+        data = await self._request("GET", "/puppet-node/sql/dialects")
+        return self._database_result("dialects", data)
+
+    async def database_connection_query(
+        self,
+        operation: str,
+        endpoint: str,
+        session_id: str,
+        connection_id: str,
+    ) -> dict[str, object]:
+        data = await self._request(
+            "POST",
+            endpoint,
+            json=self._database_payload(session_id, connection_id),
+        )
+        return self._database_result(operation, data)
+
+    async def database_object_query(
+        self,
+        operation: str,
+        endpoint: str,
+        session_id: str,
+        connection_id: str,
+        object_ref: dict[str, object],
+    ) -> dict[str, object]:
+        payload = self._database_payload(session_id, connection_id)
+        payload["objectRef"] = object_ref
+        data = await self._request("POST", endpoint, json=payload)
+        return self._database_result(operation, data)
+
+    async def query_database_table(
+        self,
+        session_id: str,
+        connection_id: str,
+        table: dict[str, object],
+        *,
+        page: int,
+        page_size: int,
+        columns: list[str],
+        order_by: list[dict[str, object]],
+        filters: list[dict[str, object]],
+        include_total: bool,
+        query_timeout_seconds: int,
+    ) -> dict[str, object]:
+        data = await self._request(
+            "POST",
+            "/puppet-node/sql/data/query-table",
+            json={
+                "sessionId": session_id,
+                "connection": {"connectionId": connection_id},
+                "objectRef": table,
+                "page": page,
+                "pageSize": page_size,
+                "columns": columns,
+                "orderBy": order_by,
+                "filters": filters,
+                "includeTotal": include_total,
+                "queryTimeoutSeconds": query_timeout_seconds,
+            },
+        )
+        return self._database_result("table_query", data)
+
+    async def database_action(
+        self,
+        operation: str,
+        endpoint: str,
+        session_id: str,
+        connection_id: str,
+        *,
+        object_ref: dict[str, object] | None = None,
+        values: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        payload = self._database_payload(session_id, connection_id)
+        if object_ref is not None:
+            payload["objectRef"] = object_ref
+        if values is not None:
+            payload.update(values)
+        data = await self._action_request("POST", endpoint, json=payload)
+        return self._database_result(operation, data)
+
+    async def start_file_upload(
+        self,
+        session_id: str,
+        vfs_path: str,
+        file_path: str,
+        chunk_size: int,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/file/upload-engine/start",
+            json={
+                "sessionId": session_id,
+                "vfsPath": vfs_path,
+                "filePath": file_path,
+                "chunkSize": chunk_size,
+            },
+        )
+        return self._file_transfer_start_result("upload", data)
+
+    async def start_file_download(
+        self,
+        session_id: str,
+        file_path: str,
+        threads: int,
+        chunk_size: int,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/file/download-engine/start",
+            json={
+                "sessionId": session_id,
+                "filePath": file_path,
+                "threads": threads,
+                "chunkSize": chunk_size,
+            },
+        )
+        return self._file_transfer_start_result("download", data)
+
+    async def query_file_transfer(
+        self,
+        direction: str,
+        task_id: str,
+    ) -> dict[str, object]:
+        data = await self._request(
+            "POST",
+            f"/puppet-node/file/{direction}-engine/progress",
+            json={"taskId": task_id},
+        )
+        return self._file_transfer_result(direction, "queried", data, task_id=task_id)
+
+    async def control_file_transfer(
+        self,
+        direction: str,
+        session_id: str,
+        task_id: str,
+        action: str,
+    ) -> dict[str, object]:
+        if action not in {"pause", "resume", "cancel", "retry", "remove"}:
+            raise LeoAIError("tool_input_invalid", "unsupported file-transfer action")
+        payload: dict[str, object] = {"taskId": task_id}
+        if action in {"resume", "retry"}:
+            payload = {"sessionId": session_id, "taskId": task_id}
+        data = await self._action_request(
+            "POST",
+            f"/puppet-node/file/{direction}-engine/{action}",
+            json=payload,
+        )
+        return self._file_transfer_result(direction, action, data, task_id=task_id)
+
+    async def list_file_transfer_tasks(
+        self,
+        direction: str,
+        session_id: str,
+    ) -> dict[str, object]:
+        data = await self._request(
+            "POST",
+            f"/puppet-node/file/{direction}-engine/tasks",
+            json={"sessionId": session_id},
+        )
+        return self._file_transfer_result(direction, "listed", data)
+
+    async def invoke_allowed_plugin(
+        self,
+        session_id: str,
+        plugin_id: str,
+        plugin_param: dict[str, object],
+    ) -> dict[str, object]:
+        if plugin_id not in self._allowed_plugin_ids:
+            raise LeoAIError("tool_disabled", "plugin is not enabled by the deployment allowlist")
+        data = await self._action_request(
+            "POST",
+            "/puppet-node/plugin/invoke",
+            json={
+                "sessionId": session_id,
+                "pluginId": plugin_id,
+                "pluginParam": plugin_param,
+            },
+        )
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid plugin result")
+        return {
+            "untrusted_external_content": True,
+            "plugin": {
+                "pluginId": plugin_id,
+                "result": _sanitize_external(data),
+            },
+        }
+
     async def get_docker_info(self, session_id: str) -> dict[str, object]:
         return await self._docker_query("info", "/puppet-node/docker/info", {"sessionId": session_id})
 
@@ -767,6 +958,47 @@ class LeoAITools:
                 "operation": operation,
                 "result": _sanitize_external(data),
             },
+        }
+
+    def _database_result(self, operation: str, data: object) -> dict[str, object]:
+        if not isinstance(data, (dict, list)):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid database result")
+        return {
+            "untrusted_external_content": True,
+            "database": {
+                "operation": operation,
+                "result": _sanitize_external(data),
+            },
+        }
+
+    def _file_transfer_start_result(self, direction: str, data: object) -> dict[str, object]:
+        if not isinstance(data, dict) or not isinstance(data.get("taskId"), str) or not data["taskId"]:
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned a file-transfer start without a task ID")
+        return self._file_transfer_result(direction, "started", data)
+
+    def _file_transfer_result(
+        self,
+        direction: str,
+        operation: str,
+        data: object,
+        *,
+        task_id: str | None = None,
+    ) -> dict[str, object]:
+        if not isinstance(data, (dict, list)):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid file-transfer result")
+        task: dict[str, object] = {
+            "direction": direction,
+            "operation": operation,
+            "result": _sanitize_external(data),
+        }
+        if task_id is not None:
+            task["taskId"] = task_id
+        return {"untrusted_external_content": True, "fileTransfer": task}
+
+    def _database_payload(self, session_id: str, connection_id: str) -> dict[str, object]:
+        return {
+            "sessionId": session_id,
+            "connection": {"connectionId": connection_id},
         }
 
     async def _system_action(
