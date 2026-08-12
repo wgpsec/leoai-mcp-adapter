@@ -1044,6 +1044,127 @@ async def test_operate_queries_database_metadata_and_rows_through_saved_connecti
 
 
 @pytest.mark.asyncio
+async def test_1x_profile_maps_structured_database_queries_to_the_legacy_contract():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"rows": []}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        leoai_protocol_profile="1x",
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        tables = await session.call_tool(
+            "leo_list_database_tables",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "namespace": {"catalog": "main"},
+            },
+        )
+        columns = await session.call_tool(
+            "leo_list_database_columns",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": {"catalog": "main", "name": "users"},
+            },
+        )
+        queried = await session.call_tool(
+            "leo_query_database_table",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": {"catalog": "main", "name": "users"},
+                "page": 2,
+                "pageSize": 25,
+                "columns": ["id"],
+                "orderBy": [{"field": "id", "direction": "desc"}],
+                "filters": [{"field": "id", "operator": "gte", "value": 1}],
+                "includeTotal": True,
+                "queryTimeoutSeconds": 10,
+            },
+        )
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in (tables, columns, queried))
+    connection = {"connectionId": "connection-1"}
+    assert requests == [
+        (
+            "/puppet-node/sql/metadata/tables",
+            {"sessionId": "session-1", "connection": connection, "database": "main"},
+        ),
+        (
+            "/puppet-node/sql/metadata/table-columns",
+            {"sessionId": "session-1", "connection": connection, "database": "main", "table": "users"},
+        ),
+        (
+            "/puppet-node/sql/data/query-table",
+            {
+                "sessionId": "session-1",
+                "connection": connection,
+                "database": "main",
+                "table": "users",
+                "page": 2,
+                "pageSize": 25,
+                "columns": ["id"],
+                "orderBy": [{"field": "id", "direction": "desc"}],
+                "filters": [{"field": "id", "operator": "gte", "value": 1}],
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_1x_profile_rejects_ambiguous_database_namespace_without_an_upstream_call():
+    requests: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        requests.append(request.url.path)
+        return httpx.Response(200, json={"code": 200, "data": {"rows": []}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        leoai_protocol_profile="1x",
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        result = await session.call_tool(
+            "leo_query_database_table",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": {"catalog": "catalog-a", "schema": "schema-b", "name": "users"},
+            },
+        )
+    await leoai.aclose()
+
+    assert result.isError is True
+    assert "tool_input_invalid" in result.content[0].text
+    assert requests == []
+
+
+@pytest.mark.asyncio
 async def test_operate_database_metadata_tools_use_only_fixed_saved_connection_endpoints():
     requests: list[tuple[str, dict[str, object]]] = []
 
@@ -1218,6 +1339,75 @@ async def test_operate_database_row_changes_are_structured_bounded_actions():
 
 
 @pytest.mark.asyncio
+async def test_1x_profile_maps_bounded_database_actions_to_the_legacy_contract_once():
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        payload = json.loads(request.read())
+        requests.append((request.url.path, payload))
+        return httpx.Response(200, json={"code": 200, "data": {"affectedRows": 1}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        leoai_protocol_profile="1x",
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    table = {"catalog": "main", "name": "users"}
+    where = {"filters": [{"field": "id", "operator": "eq", "value": 7}]}
+    async with _mcp_session(app) as session:
+        inserted = await session.call_tool(
+            "leo_insert_database_row",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "row": {"id": 7, "name": "canary"},
+            },
+        )
+        updated = await session.call_tool(
+            "leo_update_database_rows",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "where": where,
+                "update": {"name": "updated"},
+            },
+        )
+        deleted = await session.call_tool(
+            "leo_delete_database_rows",
+            {
+                "sessionId": "session-1",
+                "connectionId": "connection-1",
+                "table": table,
+                "where": where,
+            },
+        )
+    await leoai.aclose()
+
+    assert all(result.isError is False for result in (inserted, updated, deleted))
+    base_payload = {
+        "sessionId": "session-1",
+        "connection": {"connectionId": "connection-1"},
+        "database": "main",
+        "table": "users",
+    }
+    assert requests == [
+        ("/puppet-node/sql/rows/insert", base_payload | {"row": {"id": 7, "name": "canary"}}),
+        ("/puppet-node/sql/rows/update", base_payload | {"where": where, "update": {"name": "updated"}}),
+        ("/puppet-node/sql/rows/delete", base_payload | {"where": where}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_operate_file_upload_has_a_bounded_task_lifecycle():
     requests: list[tuple[str, dict[str, object]]] = []
 
@@ -1297,6 +1487,45 @@ async def test_operate_file_upload_has_a_bounded_task_lifecycle():
         ("/puppet-node/file/upload-engine/remove", {"taskId": "upload-1"}),
         ("/puppet-node/file/upload-engine/tasks", {"sessionId": "session-1"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_1x_profile_rejects_2x_only_capabilities_without_contacting_leoai():
+    requests: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        requests.append(request.url.path)
+        return httpx.Response(200, json={"code": 200, "data": {"taskId": "unexpected"}})
+
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        leoai_protocol_profile="1x",
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        capabilities = await session.call_tool(
+            "leo_get_database_runtime_capabilities",
+            {"sessionId": "session-1", "connectionId": "connection-1"},
+        )
+        removed = await session.call_tool(
+            "leo_control_file_upload",
+            {"sessionId": "session-1", "taskId": "upload-1", "action": "remove"},
+        )
+    await leoai.aclose()
+
+    assert capabilities.isError is True
+    assert removed.isError is True
+    assert "leoai_capability_unsupported" in capabilities.content[0].text
+    assert "leoai_capability_unsupported" in removed.content[0].text
+    assert requests == []
 
 
 @pytest.mark.asyncio

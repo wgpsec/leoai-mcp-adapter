@@ -14,12 +14,14 @@ class LeoAITools:
         self,
         client: LeoAIClient,
         *,
+        protocol_profile: str,
         max_concurrency: int,
         max_file_bytes: int,
         max_file_write_bytes: int,
         allowed_plugin_ids: tuple[str, ...],
     ) -> None:
         self._client = client
+        self._protocol_profile = protocol_profile
         self._max_concurrency = max_concurrency
         self._max_file_bytes = max_file_bytes
         self._max_file_write_bytes = max_file_write_bytes
@@ -603,6 +605,11 @@ class LeoAITools:
         session_id: str,
         connection_id: str,
     ) -> dict[str, object]:
+        if self._protocol_profile == "1x" and operation == "runtime_capabilities":
+            raise LeoAIError(
+                "leoai_capability_unsupported",
+                "LeoAI 1.x does not expose database runtime capabilities",
+            )
         data = await self._request(
             "POST",
             endpoint,
@@ -619,7 +626,7 @@ class LeoAITools:
         object_ref: dict[str, object],
     ) -> dict[str, object]:
         payload = self._database_payload(session_id, connection_id)
-        payload["objectRef"] = object_ref
+        payload.update(self._database_object_payload(object_ref))
         data = await self._request("POST", endpoint, json=payload)
         return self._database_result(operation, data)
 
@@ -637,22 +644,25 @@ class LeoAITools:
         include_total: bool,
         query_timeout_seconds: int,
     ) -> dict[str, object]:
-        data = await self._request(
-            "POST",
-            "/puppet-node/sql/data/query-table",
-            json={
-                "sessionId": session_id,
-                "connection": {"connectionId": connection_id},
-                "objectRef": table,
+        payload = self._database_payload(session_id, connection_id)
+        payload.update(self._database_object_payload(table))
+        payload.update(
+            {
                 "page": page,
                 "pageSize": page_size,
                 "columns": columns,
                 "orderBy": order_by,
                 "filters": filters,
-                "includeTotal": include_total,
-                "queryTimeoutSeconds": query_timeout_seconds,
-            },
+            }
         )
+        if self._protocol_profile == "2x":
+            payload.update(
+                {
+                    "includeTotal": include_total,
+                    "queryTimeoutSeconds": query_timeout_seconds,
+                }
+            )
+        data = await self._request("POST", "/puppet-node/sql/data/query-table", json=payload)
         return self._database_result("table_query", data)
 
     async def database_action(
@@ -667,7 +677,7 @@ class LeoAITools:
     ) -> dict[str, object]:
         payload = self._database_payload(session_id, connection_id)
         if object_ref is not None:
-            payload["objectRef"] = object_ref
+            payload.update(self._database_object_payload(object_ref))
         if values is not None:
             payload.update(values)
         data = await self._action_request("POST", endpoint, json=payload)
@@ -732,6 +742,11 @@ class LeoAITools:
     ) -> dict[str, object]:
         if action not in {"pause", "resume", "cancel", "retry", "remove"}:
             raise LeoAIError("tool_input_invalid", "unsupported file-transfer action")
+        if self._protocol_profile == "1x" and action == "remove":
+            raise LeoAIError(
+                "leoai_capability_unsupported",
+                "LeoAI 1.x does not expose file-transfer task removal",
+            )
         payload: dict[str, object] = {"taskId": task_id}
         if action in {"resume", "retry"}:
             payload = {"sessionId": session_id, "taskId": task_id}
@@ -1000,6 +1015,24 @@ class LeoAITools:
             "sessionId": session_id,
             "connection": {"connectionId": connection_id},
         }
+
+    def _database_object_payload(self, object_ref: dict[str, object]) -> dict[str, object]:
+        if self._protocol_profile == "2x":
+            return {"objectRef": object_ref}
+        payload: dict[str, object] = {}
+        catalog = object_ref.get("catalog")
+        schema = object_ref.get("schema")
+        if catalog is not None and schema is not None and catalog != schema:
+            raise LeoAIError(
+                "tool_input_invalid",
+                "LeoAI 1.x cannot represent different catalog and schema values",
+            )
+        namespace = schema or catalog
+        if namespace is not None:
+            payload["database"] = namespace
+        if object_ref.get("name") is not None:
+            payload["table"] = object_ref["name"]
+        return payload
 
     async def _system_action(
         self,

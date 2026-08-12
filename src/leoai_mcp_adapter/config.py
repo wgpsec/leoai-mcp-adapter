@@ -30,6 +30,7 @@ class Settings:
     leoai_tls_verify: bool = True
     leoai_connect_timeout_seconds: float = 5.0
     leoai_read_timeout_seconds: float = 30.0
+    leoai_protocol_profile: str = "2x"
     mcp_max_concurrency: int = 8
     mcp_max_response_bytes: int = 1024 * 1024
     mcp_tool_profile: str = "observe"
@@ -71,6 +72,7 @@ class Settings:
             leoai_tls_verify=tls_verify,
             leoai_connect_timeout_seconds=_float(env, "LEOAI_CONNECT_TIMEOUT_SECONDS", 5.0, 0.1, 60.0),
             leoai_read_timeout_seconds=_float(env, "LEOAI_READ_TIMEOUT_SECONDS", 30.0, 0.1, 300.0),
+            leoai_protocol_profile=_choice(env, "LEOAI_PROTOCOL_PROFILE", "2x", {"1x", "2x"}),
             mcp_max_concurrency=_integer(env, "MCP_MAX_CONCURRENCY", 8, 1, 64),
             mcp_max_response_bytes=_integer(env, "MCP_MAX_RESPONSE_BYTES", 1024 * 1024, 1024, 16 * 1024 * 1024),
             mcp_tool_profile=_choice(env, "MCP_TOOL_PROFILE", "observe", {"observe", "operate", "privileged"}),

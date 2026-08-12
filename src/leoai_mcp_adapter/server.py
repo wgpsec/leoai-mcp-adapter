@@ -37,6 +37,7 @@ def create_app(settings: Settings, leoai: LeoAIClient):
         mcp,
         LeoAITools(
             leoai,
+            protocol_profile=settings.leoai_protocol_profile,
             max_concurrency=settings.mcp_max_concurrency,
             max_file_bytes=settings.mcp_max_file_bytes,
             max_file_write_bytes=settings.mcp_max_file_write_bytes,
