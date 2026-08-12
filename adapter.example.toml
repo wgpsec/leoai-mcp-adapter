@@ -1,0 +1,17 @@
+# 复制为 adapter.toml 后按实际环境修改，并执行 chmod 600 adapter.toml。
+leoai_base_url = "http://leoai.example:8082"
+leoai_username = "admin"
+leoai_password = "请填写 LeoAI 密码"
+mcp_client_token = "请填写一个仅供 PoJun 连接 Adapter 使用的随机 Token"
+
+# 内网 HTTP LeoAI 使用 development；HTTPS 生产环境改为 production。
+adapter_env = "development"
+leoai_tls_verify = true
+leoai_protocol_profile = "2x"
+
+mcp_tool_profile = "operate"
+mcp_enable_file_read = true
+mcp_bind_host = "0.0.0.0"
+mcp_bind_port = 18080
+# 本地可信网络可关闭 Host 校验；Bearer Token 认证仍然生效。
+mcp_dns_rebinding_protection = false

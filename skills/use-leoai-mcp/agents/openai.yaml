@@ -1,0 +1,4 @@
+interface:
+  display_name: "使用 LeoAI MCP"
+  short_description: "通过 LeoAI Puppet 安全地调查和执行受控操作"
+  default_prompt: "Use $use-leoai-mcp to inspect the selected LeoAI Puppet and complete the requested task."

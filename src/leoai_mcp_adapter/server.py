@@ -29,7 +29,7 @@ def create_app(settings: Settings, leoai: LeoAIClient):
         streamable_http_path="/mcp",
         json_response=True,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
+            enable_dns_rebinding_protection=settings.mcp_dns_rebinding_protection,
             allowed_hosts=list(settings.mcp_allowed_hosts),
         ),
     )

@@ -1,0 +1,5 @@
+{
+  "name": "use-leoai-mcp",
+  "description": "通过 LeoAI MCP 调查已有 Puppet，并执行任务明确授权的受控操作",
+  "entry": "SKILL.md"
+}

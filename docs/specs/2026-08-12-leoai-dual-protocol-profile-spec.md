@@ -111,6 +111,72 @@ LeoAI 2.x build. Actions use synthetic canaries only. A profile is documented as
 verified only after its own matrix passes; success in one profile is not
 evidence for the other.
 
+### 6.1 LeoAI 1.0.1 Live Validation
+
+On 2026-08-12, the `1x` profile was replayed against an official LeoAI `1.0.1`
+deployment with a temporary loopback PHP Puppet and synthetic `/tmp` data. The
+following paths passed through the MCP transport and the real LeoAI runtime:
+
+- authentication, 68-Tool discovery, Puppet connectivity and Session lifecycle;
+- capability, basic information and legacy file-profile fallback;
+- file create, bounded read, content verification and delete;
+- terminal open, write, incremental read and stop. LeoAI 1.x commits PTY input
+  with `\r` and returns terminal bytes as Base64; the decoded output contained
+  the expected canary;
+- SQLite connection test, database/table/column metadata, bounded query, and
+  insert/update/delete with final empty-state verification;
+- local `leoai_capability_unsupported` gates for SQL runtime capabilities and
+  transfer removal, with no cross-profile upstream fallback.
+
+The replay removed its database connection, Session, Puppet, loopback server
+and synthetic files. A final read-only probe reported zero Puppets and zero
+Sessions.
+
+### 6.2 LeoAI 2.0.0 Release Validation
+
+On 2026-08-12, the `2x` profile was replayed against the published
+`LeoAi-2.0.0.jar`. Authentication, 68-Tool discovery, Project and Session APIs,
+Session capabilities, basic host information, process listing, service listing,
+network-connection listing, terminal lifecycle, database connection management,
+database connection testing, and the 2.x SQL runtime-capabilities endpoint all
+passed through the standard MCP transport. The transfer-remove probe reached
+the 2.0.0 endpoint instead of the 1.x local capability gate.
+
+The initially available Java Puppet was an existing remote target, not a Puppet
+generated from this 2.0.0 deployment. Its terminal reported
+`backend=unix-pipe` and `pty=false`; newline input produced the expected decoded
+canary, while carriage return did not submit the command. The following checks
+failed on that mixed-version target:
+
+- file profile and directory creation failed because the Puppet required an
+  integer action while the 2.0.0 Server sent `profile` and `createDirectory`;
+  the legacy `/file/list-root` fallback is absent in 2.0.0, so the Adapter must
+  not hide this runtime mismatch with another fallback;
+- SQLite metadata and row operations could not proceed because that Java
+  runtime reported `org.sqlite.JDBC` unavailable, although connection testing
+  and runtime capability reporting behaved correctly;
+- Docker information returned an upstream failure on that target.
+
+To resolve attribution, the same `LeoAi-2.0.0.jar` runtime generator produced a
+fresh protocol-v2 PHP Puppet using `inner_PHP_JSON_API_1.0.0`. It ran on PHP 8.2
+with `pdo_sqlite` and passed the complete Adapter matrix:
+
+- Puppet connectivity, Session lifecycle, capabilities and basic information;
+- file profile, bounded create/read/content verification/delete;
+- PTY terminal open/write/incremental read/stop with decoded canary output;
+- SQLite connection test and runtime-capability reporting;
+- 2.x `objectRef` database/table/column metadata, bounded query, insert, update,
+  delete and final-state verification;
+- transfer removal reached the 2.0.0 endpoint instead of the 1.x local gate.
+
+This confirms that the Adapter's `2x` request contract is compatible with the
+published 2.0.0 release. The earlier failures belong to a mixed Server/Puppet
+runtime combination and missing target dependencies, not to Adapter DTO
+mapping. Deployments must regenerate or otherwise version-match Puppets after
+the 2.0.0 protocol change. All temporary Puppets, Sessions, database profiles,
+terminal processes, loopback services and synthetic files were removed. PoJun
+end-to-end integration remains a separate release check.
+
 ## 7. Non-Goals
 
 - modifying or distributing LeoAI frontend source;

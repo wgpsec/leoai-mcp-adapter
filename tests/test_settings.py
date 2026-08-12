@@ -167,3 +167,113 @@ def test_production_settings_reject_disabled_tls_verification(tmp_path):
                 "LEOAI_TLS_VERIFY": "false",
             }
         )
+
+
+def test_settings_loads_flat_toml_and_resolves_secret_paths_from_config_directory(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    _secret_file(secrets, "leoai-password", "operator-password")
+    _secret_file(secrets, "mcp-token", "adapter-token")
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text(
+        """
+leoai_base_url = "http://leoai.internal:8082"
+leoai_username = "operator"
+leoai_password_file = "secrets/leoai-password"
+mcp_client_token_file = "secrets/mcp-token"
+adapter_env = "development"
+leoai_protocol_profile = "2x"
+mcp_tool_profile = "operate"
+mcp_enable_file_read = true
+mcp_bind_host = "0.0.0.0"
+mcp_bind_port = 18080
+mcp_allowed_hosts = ["localhost:*", "host.docker.internal:*"]
+""".strip(),
+        encoding="utf-8",
+    )
+
+    settings = Settings.from_toml(config_file)
+
+    assert settings.leoai_base_url == "http://leoai.internal:8082"
+    assert settings.leoai_username == "operator"
+    assert settings.leoai_password.get_secret_value() == "operator-password"
+    assert settings.mcp_client_token.get_secret_value() == "adapter-token"
+    assert settings.adapter_env == "development"
+    assert settings.leoai_protocol_profile == "2x"
+    assert settings.mcp_tool_profile == "operate"
+    assert settings.mcp_enable_file_read is True
+    assert settings.mcp_bind_host == "0.0.0.0"
+    assert settings.mcp_bind_port == 18080
+    assert settings.mcp_allowed_hosts == ("localhost:*", "host.docker.internal:*")
+
+
+def test_settings_rejects_unknown_toml_fields(tmp_path):
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text('leoai_base_url = "https://leoai.internal"\nunknown = true\n', encoding="utf-8")
+
+    with pytest.raises(SettingsError, match="unknown configuration field: unknown"):
+        Settings.from_toml(config_file)
+
+
+def test_settings_loads_inline_secrets_from_private_toml(tmp_path):
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text(
+        """
+leoai_base_url = "http://leoai.internal:8082"
+leoai_username = "operator"
+leoai_password = "operator-password"
+mcp_client_token = "adapter-token"
+adapter_env = "development"
+""".strip(),
+        encoding="utf-8",
+    )
+    os.chmod(config_file, 0o600)
+
+    settings = Settings.from_toml(config_file)
+
+    assert settings.leoai_password.get_secret_value() == "operator-password"
+    assert settings.mcp_client_token.get_secret_value() == "adapter-token"
+
+
+def test_settings_rejects_inline_secrets_in_readable_toml(tmp_path):
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text(
+        'leoai_password = "operator-password"\nmcp_client_token = "adapter-token"\n',
+        encoding="utf-8",
+    )
+    os.chmod(config_file, 0o644)
+
+    with pytest.raises(SettingsError, match="inline secrets must not be accessible"):
+        Settings.from_toml(config_file)
+
+
+def test_settings_rejects_inline_and_file_secret_for_same_credential(tmp_path):
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text(
+        'leoai_password = "operator-password"\nleoai_password_file = "password-file"\n',
+        encoding="utf-8",
+    )
+    os.chmod(config_file, 0o600)
+
+    with pytest.raises(SettingsError, match="configure only one of leoai_password or leoai_password_file"):
+        Settings.from_toml(config_file)
+
+
+def test_settings_can_explicitly_disable_dns_rebinding_protection(tmp_path):
+    config_file = tmp_path / "adapter.toml"
+    config_file.write_text(
+        """
+leoai_base_url = "http://leoai.internal:8082"
+leoai_username = "operator"
+leoai_password = "operator-password"
+mcp_client_token = "adapter-token"
+adapter_env = "development"
+mcp_dns_rebinding_protection = false
+""".strip(),
+        encoding="utf-8",
+    )
+    os.chmod(config_file, 0o600)
+
+    settings = Settings.from_toml(config_file)
+
+    assert settings.mcp_dns_rebinding_protection is False

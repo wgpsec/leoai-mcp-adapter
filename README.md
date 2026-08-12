@@ -10,9 +10,18 @@ MCP 适配器。它为 PoJun 等客户端提供范围受限、显式映射的 To
 `6fb4de979db23de4fa8b23e5ed6a98c710a82fda` 的 API；`1x` Profile 面向官方
 `1.0.1` Release。当前已经完成本地协议与契约测试，以及 LeoAI `1.0.1` Java/PHP
 Puppet 的真实 Observe、Session、终端、文件、进程、服务、网络和扫描矩阵验证。
+`1x` Profile 的 SQLite 元数据、查询、插入、更新和删除映射也已在真实 `1.0.1`
+环境通过；终端的 Base64 输出解码后与 canary 一致。
 真实 Java Puppet 已通过主机、端口和指纹扫描；Recon 请求已到达 LeoAI，但新生成的
 Java Puppet 返回了上游 `requestId` 不匹配。这属于 LeoAI Runtime 兼容性缺口，
 Adapter 不会为此降级。PoJun Docker Runtime 验证仍是环境级发布门禁。
+
+发布版 `LeoAi-2.0.0.jar` 已通过 Adapter 登录、Tool discovery、Project/Session、
+基础信息、进程、服务、网络和终端真实回放。使用该 JAR 自带生成器生成的 protocol-v2
+PHP Puppet 后，文件 Profile/CRUD、PTY 终端、SQLite runtime-capabilities 以及 2x
+`objectRef` 元数据、查询、插入、更新和删除完整矩阵均通过。测试机原有的旧 Java
+Puppet 存在 action 编码不兼容且缺少 SQLite JDBC Driver，属于 Server/Puppet 混合
+版本与目标运行时依赖问题；升级到 2.0.0 后应重新生成或确保 Puppet 协议版本匹配。
 
 Adapter 支持两个显式的上游协议 Profile。连接官方 LeoAI `1.0.1` 时设置
 `LEOAI_PROTOCOL_PROFILE=1x`；连接当前 2.x API 时设置
@@ -79,8 +88,32 @@ Puppet 支持组件调用。
 
 ## 配置
 
-LeoAI 凭据和 MCP 客户端 Token 从权限为 `0600` 的 Secret 文件读取，不作为 MCP
-Tool 参数传入。
+日常运行推荐使用仓库内的 TOML 示例。服务地址、账号、LeoAI 密码和 MCP 客户端
+Token 都可以写在同一个配置文件中，不作为 MCP Tool 参数传入：
+
+```bash
+cp adapter.example.toml adapter.toml
+chmod 600 adapter.toml
+```
+
+然后只需编辑 `adapter.toml`。包含内联密码和 Token 时，Adapter 强制要求配置文件
+权限为 `0600`；未知字段或同一凭据同时使用内联值与文件路径时会拒绝启动。生成的
+`adapter.toml` 已加入 Git 忽略规则。
+
+列表项 `mcp_allowed_hosts` 和 `mcp_allowed_plugin_ids` 在 TOML 中使用字符串数组。
+原有 Secret 文件与环境变量方式仍然支持，适合容器或编排系统；启动时二选一，使用
+`--config` 后配置完全来自 TOML，不与环境变量隐式合并。若部署时不希望在 TOML
+内联凭据，仍可使用 `leoai_password_file` 和 `mcp_client_token_file`，相对路径按 TOML
+所在目录解析。
+
+本地可信网络若不想维护 Host 白名单，可以设置：
+
+```toml
+mcp_dns_rebinding_protection = false
+```
+
+这会接受任意 Host，但 Bearer Token 认证仍然生效。公网或不可信网络建议保持默认值
+`true`，并通过 `mcp_allowed_hosts` 明确允许访问 Adapter 的域名或 IP。
 
 | 环境变量 | 默认值 | 用途 |
 |---|---|---|
@@ -102,6 +135,7 @@ Tool 参数传入。
 | `MCP_ALLOWED_PLUGIN_IDS` | 空 | 允许调用的已安装插件 ID，使用英文逗号分隔 |
 | `MCP_BIND_HOST` | `127.0.0.1` | HTTP 监听地址 |
 | `MCP_BIND_PORT` | `8000` | HTTP 监听端口 |
+| `MCP_DNS_REBINDING_PROTECTION` | `true` | 是否校验 HTTP Host；设为 `false` 可显式全部放开 |
 | `MCP_ALLOWED_HOSTS` | 仅本机 | 允许的 HTTP Host，使用英文逗号分隔 |
 
 生产模式拒绝明文 HTTP LeoAI URL，也不允许关闭 TLS 验证。只有在受控的本地 LeoAI
@@ -111,6 +145,12 @@ Tool 参数传入。
 
 ```bash
 uv sync --locked
+uv run leoai-mcp-adapter --config adapter.toml
+```
+
+不传 `--config` 时仍按原方式读取环境变量：
+
+```bash
 uv run leoai-mcp-adapter
 ```
 
@@ -135,6 +175,12 @@ PoJun MCP 注册示例：
   }
 }
 ```
+
+仓库同时提供轻量项目技能
+[`use-leoai-mcp`](skills/use-leoai-mcp/SKILL.md)，用于约束 Puppet/Session 选择、
+先观察后操作、Action 后独立验证、终端输出解码和资源清理。PoJun 新建 Project 时可
+直接上传该 `SKILL.md`，阶段范围建议选择 `bootstrap + explore`。Skill 不包含凭据、
+服务地址或 Tool 实现，仍需为 Project 单独启用上述 LeoAI HTTP MCP。
 
 构建可选容器镜像：
 

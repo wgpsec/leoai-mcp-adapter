@@ -86,6 +86,53 @@ async def test_mcp_endpoint_rejects_requests_without_the_adapter_token():
 
 
 @pytest.mark.asyncio
+async def test_disabled_dns_rebinding_protection_accepts_any_host_but_keeps_bearer_auth():
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_dns_rebinding_protection=False,
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    app = create_app(settings, leoai)
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1"},
+        },
+    }
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://10.221.0.219:18080",
+        ) as client:
+            unauthorized = await client.post(
+                "/mcp",
+                headers={"accept": "application/json, text/event-stream"},
+                json=payload,
+            )
+            initialized = await client.post(
+                "/mcp",
+                headers={
+                    "authorization": "Bearer adapter-token",
+                    "accept": "application/json, text/event-stream",
+                },
+                json=payload,
+            )
+
+    assert unauthorized.status_code == 401
+    assert initialized.status_code == 200
+    assert initialized.json()["result"]["protocolVersion"] == "2024-11-05"
+
+
+@pytest.mark.asyncio
 async def test_ready_endpoint_requires_adapter_token_and_verifies_leoai_login():
     login_requests = 0
 
