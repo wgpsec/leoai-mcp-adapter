@@ -32,8 +32,8 @@ Adapter 支持两个显式的上游协议 Profile。连接官方 LeoAI `1.0.1` �
 LeoAI `1.0.1` 不包含新版 Project API。在该版本上，`leo_list_projects` 和
 `leo_list_project_puppets` 会返回 `leoai_capability_unsupported`，Session 和文件
 Tool 仍可使用。缺少显式文件系统 Profile 接口时，Adapter 会通过旧版只读根目录列表
-接口推导路径语义。仍要求首次修改密码的账号会被报告为未就绪，必须先在 LeoAI 中
-完成改密才能使用。
+接口推导路径语义。Adapter 默认使用 LeoAI 初始密码 `54ikun`，在首次认证时自动
+完成密码迁移；不同 LeoAI 构建可通过 `LEOAI_INITIAL_PASSWORD_FILE` 覆盖该值。
 
 ## Tool
 
@@ -88,8 +88,8 @@ Puppet 支持组件调用。
 
 ## 配置
 
-日常运行推荐使用仓库内的 TOML 示例。服务地址、账号、LeoAI 密码和 MCP 客户端
-Token 都可以写在同一个配置文件中，不作为 MCP Tool 参数传入：
+日常运行推荐使用仓库内的 TOML 示例。服务地址、账号、LeoAI 密码、可选的初始密码
+和 MCP 客户端 Token 都可以写在同一个配置文件中，不作为 MCP Tool 参数传入：
 
 ```bash
 cp adapter.example.toml adapter.toml
@@ -103,8 +103,8 @@ chmod 600 adapter.toml
 列表项 `mcp_allowed_hosts` 和 `mcp_allowed_plugin_ids` 在 TOML 中使用字符串数组。
 原有 Secret 文件与环境变量方式仍然支持，适合容器或编排系统；启动时二选一，使用
 `--config` 后配置完全来自 TOML，不与环境变量隐式合并。若部署时不希望在 TOML
-内联凭据，仍可使用 `leoai_password_file` 和 `mcp_client_token_file`，相对路径按 TOML
-所在目录解析。
+内联凭据，仍可使用 `leoai_password_file`、`leoai_initial_password_file` 和
+`mcp_client_token_file`，相对路径按 TOML 所在目录解析。
 
 本地可信网络若不想维护 Host 白名单，可以设置：
 
@@ -120,6 +120,7 @@ mcp_dns_rebinding_protection = false
 | `LEOAI_BASE_URL` | 必填 | 固定的 LeoAI Origin |
 | `LEOAI_USERNAME` | 必填 | 专用的低权限 LeoAI 账号 |
 | `LEOAI_PASSWORD_FILE` | 必填 | 保存 LeoAI 密码的 Secret 文件 |
+| `LEOAI_INITIAL_PASSWORD_FILE` | `54ikun` | 覆盖 LeoAI 初始密码；需改密时自动迁移到 `LEOAI_PASSWORD_FILE` |
 | `MCP_CLIENT_TOKEN_FILE` | 必填 | 保存 Bearer Token 的 Secret 文件 |
 | `ADAPTER_ENV` | `production` | 可选 `production`、`development` 或 `test` |
 | `LEOAI_TLS_VERIFY` | `true` | 验证 LeoAI TLS；生产环境必须为 `true` |

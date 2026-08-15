@@ -16,6 +16,7 @@ def _secret_file(tmp_path, name: str, value: str):
 
 def test_settings_loads_operator_supplied_credentials_from_secret_files(tmp_path):
     password_file = _secret_file(tmp_path, "leoai-password", "correct horse\n")
+    initial_password_file = _secret_file(tmp_path, "leoai-initial-password", "54ikun\n")
     token_file = _secret_file(tmp_path, "mcp-token", "adapter-token\n")
 
     settings = Settings.from_env(
@@ -23,6 +24,7 @@ def test_settings_loads_operator_supplied_credentials_from_secret_files(tmp_path
             "LEOAI_BASE_URL": "https://leoai.internal/",
             "LEOAI_USERNAME": "operator",
             "LEOAI_PASSWORD_FILE": os.fspath(password_file),
+            "LEOAI_INITIAL_PASSWORD_FILE": os.fspath(initial_password_file),
             "MCP_CLIENT_TOKEN_FILE": os.fspath(token_file),
         }
     )
@@ -30,6 +32,8 @@ def test_settings_loads_operator_supplied_credentials_from_secret_files(tmp_path
     assert settings.leoai_base_url == "https://leoai.internal"
     assert settings.leoai_username == "operator"
     assert settings.leoai_password.get_secret_value() == "correct horse"
+    assert settings.leoai_initial_password is not None
+    assert settings.leoai_initial_password.get_secret_value() == "54ikun"
     assert settings.mcp_client_token.get_secret_value() == "adapter-token"
     assert settings.mcp_tool_profile == "observe"
     assert settings.mcp_max_file_write_bytes == 256 * 1024
@@ -173,6 +177,7 @@ def test_settings_loads_flat_toml_and_resolves_secret_paths_from_config_director
     secrets = tmp_path / "secrets"
     secrets.mkdir()
     _secret_file(secrets, "leoai-password", "operator-password")
+    _secret_file(secrets, "leoai-initial-password", "54ikun")
     _secret_file(secrets, "mcp-token", "adapter-token")
     config_file = tmp_path / "adapter.toml"
     config_file.write_text(
@@ -180,6 +185,7 @@ def test_settings_loads_flat_toml_and_resolves_secret_paths_from_config_director
 leoai_base_url = "http://leoai.internal:8082"
 leoai_username = "operator"
 leoai_password_file = "secrets/leoai-password"
+leoai_initial_password_file = "secrets/leoai-initial-password"
 mcp_client_token_file = "secrets/mcp-token"
 adapter_env = "development"
 leoai_protocol_profile = "2x"
@@ -197,6 +203,8 @@ mcp_allowed_hosts = ["localhost:*", "host.docker.internal:*"]
     assert settings.leoai_base_url == "http://leoai.internal:8082"
     assert settings.leoai_username == "operator"
     assert settings.leoai_password.get_secret_value() == "operator-password"
+    assert settings.leoai_initial_password is not None
+    assert settings.leoai_initial_password.get_secret_value() == "54ikun"
     assert settings.mcp_client_token.get_secret_value() == "adapter-token"
     assert settings.adapter_env == "development"
     assert settings.leoai_protocol_profile == "2x"
@@ -232,6 +240,8 @@ adapter_env = "development"
     settings = Settings.from_toml(config_file)
 
     assert settings.leoai_password.get_secret_value() == "operator-password"
+    assert settings.leoai_initial_password is not None
+    assert settings.leoai_initial_password.get_secret_value() == "54ikun"
     assert settings.mcp_client_token.get_secret_value() == "adapter-token"
 
 

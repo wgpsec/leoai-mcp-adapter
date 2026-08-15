@@ -422,6 +422,93 @@ async def test_login_requiring_password_change_is_not_ready():
 
 
 @pytest.mark.asyncio
+async def test_client_migrates_required_initial_password_before_ready():
+    observed: list[tuple[str, str]] = []
+    migrated = False
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        nonlocal migrated
+        observed.append((request.method, request.url.path))
+        if request.url.path == "/platform/user/login":
+            body = json.loads(request.content)
+            if body["password"] == "target-password" and not migrated:
+                return httpx.Response(401, json={"code": 401, "msg": "bad credentials"})
+            if body["password"] == "target-password":
+                return httpx.Response(
+                    200,
+                    json={"code": 200, "data": {"userName": "operator"}},
+                    headers={"set-cookie": "JSESSIONID=target-session; Path=/; HttpOnly"},
+                )
+            assert body == {"username": "operator", "password": "54ikun"}
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"passwordChangeRequired": True}},
+                headers={"set-cookie": "JSESSIONID=initial-session; Path=/; HttpOnly"},
+            )
+        if request.url.path == "/platform/user/change-password":
+            migrated = True
+            assert request.headers["cookie"] == "JSESSIONID=initial-session"
+            assert json.loads(request.content) == {
+                "oldPassword": "54ikun",
+                "newPassword": "target-password",
+            }
+            return httpx.Response(200, json={"code": 200, "data": None})
+        raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("target-password"),
+        mcp_client_token=SecretStr("adapter-token"),
+        leoai_initial_password=SecretStr("54ikun"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        await client.check_ready()
+
+    assert observed == [
+        ("POST", "/platform/user/login"),
+        ("POST", "/platform/user/login"),
+        ("POST", "/platform/user/change-password"),
+        ("POST", "/platform/user/login"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_client_does_not_change_a_non_initial_password():
+    observed: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        observed.append(request.url.path)
+        if request.url.path == "/platform/user/login":
+            if json.loads(request.content)["password"] == "target-password":
+                return httpx.Response(401, json={"code": 401, "msg": "bad credentials"})
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"passwordChangeRequired": False}},
+                headers={"set-cookie": "JSESSIONID=existing-session; Path=/; HttpOnly"},
+            )
+        raise AssertionError("password change must not be attempted")
+
+    settings = Settings(
+        leoai_base_url="https://leoai.internal",
+        leoai_username="operator",
+        leoai_password=SecretStr("target-password"),
+        mcp_client_token=SecretStr("adapter-token"),
+        leoai_initial_password=SecretStr("54ikun"),
+    )
+    client = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+
+    async with client:
+        with pytest.raises(LeoAIError) as error:
+            await client.check_ready()
+
+    assert error.value.code == "leoai_auth_failed"
+    assert observed == ["/platform/user/login", "/platform/user/login"]
+
+
+@pytest.mark.asyncio
 async def test_client_does_not_inherit_host_proxy_environment(monkeypatch):
     monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:1080")
     settings = Settings(

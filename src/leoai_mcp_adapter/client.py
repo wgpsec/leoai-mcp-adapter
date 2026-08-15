@@ -101,30 +101,70 @@ class LeoAIClient:
             if self._authenticated:
                 return
             try:
-                response = await self._send(
-                    "POST",
-                    "/platform/user/login",
-                    json={
-                        "username": self._settings.leoai_username,
-                        "password": self._settings.leoai_password.get_secret_value(),
-                    },
-                )
-                authentication = _response_data(response, authenticating=True)
-                if isinstance(authentication, dict) and authentication.get("passwordChangeRequired") is True:
-                    raise LeoAIError(
-                        "leoai_auth_failed",
-                        "LeoAI account requires a password change",
-                    )
-                if not any(cookie.name == "JSESSIONID" for cookie in response.cookies.jar):
-                    raise LeoAIError(
-                        "leoai_auth_failed",
-                        "LeoAI authentication did not establish a session",
-                    )
+                authentication = await self._login(self._settings.leoai_password.get_secret_value())
+                _reject_required_password_change(authentication)
             except LeoAIError as error:
-                if error.code == "leoai_auth_failed":
-                    self._auth_failure = error
-                raise
+                initial_password = self._settings.leoai_initial_password
+                if (
+                    error.code != "leoai_auth_failed"
+                    or initial_password is None
+                    or initial_password.get_secret_value() == self._settings.leoai_password.get_secret_value()
+                ):
+                    self._latch_auth_failure(error)
+                    raise
+                try:
+                    initial_authentication = await self._login(initial_password.get_secret_value())
+                    if not _password_change_required(initial_authentication):
+                        self._latch_auth_failure(error)
+                        raise error
+                    await self._change_password(initial_password.get_secret_value())
+                    authentication = await self._login(self._settings.leoai_password.get_secret_value())
+                    _reject_required_password_change(authentication)
+                except LeoAIError as migration_error:
+                    if migration_error is error:
+                        raise
+                    wrapped = LeoAIError(
+                        "leoai_auth_failed",
+                        "LeoAI initial password migration failed",
+                    )
+                    self._latch_auth_failure(wrapped)
+                    raise wrapped from migration_error
             self._authenticated = True
+
+    async def _login(self, password: str) -> Any:
+        response = await self._send(
+            "POST",
+            "/platform/user/login",
+            json={
+                "username": self._settings.leoai_username,
+                "password": password,
+            },
+        )
+        authentication = _response_data(response, authenticating=True)
+        if not any(cookie.name == "JSESSIONID" for cookie in response.cookies.jar):
+            raise LeoAIError(
+                "leoai_auth_failed",
+                "LeoAI authentication did not establish a session",
+            )
+        return authentication
+
+    async def _change_password(self, old_password: str) -> None:
+        try:
+            response = await self._send(
+                "POST",
+                "/platform/user/change-password",
+                json={
+                    "oldPassword": old_password,
+                    "newPassword": self._settings.leoai_password.get_secret_value(),
+                },
+            )
+            _response_data(response)
+        except LeoAIError as error:
+            raise LeoAIError("leoai_auth_failed", "LeoAI initial password migration failed") from error
+
+    def _latch_auth_failure(self, error: LeoAIError) -> None:
+        if error.code == "leoai_auth_failed":
+            self._auth_failure = error
 
 
 def _response_data(response: httpx.Response, *, authenticating: bool = False) -> Any:
@@ -147,6 +187,18 @@ def _response_data(response: httpx.Response, *, authenticating: bool = False) ->
             raise LeoAIError("leoai_auth_failed", "LeoAI authentication failed")
         raise LeoAIError(*_mapped_error(code, payload.get("msg")))
     return payload.get("data")
+
+
+def _password_change_required(authentication: Any) -> bool:
+    return isinstance(authentication, dict) and authentication.get("passwordChangeRequired") is True
+
+
+def _reject_required_password_change(authentication: Any) -> None:
+    if _password_change_required(authentication):
+        raise LeoAIError(
+            "leoai_auth_failed",
+            "LeoAI account requires a password change",
+        )
 
 
 def _is_unauthorized(response: httpx.Response) -> bool:

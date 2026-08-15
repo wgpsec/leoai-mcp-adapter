@@ -15,11 +15,13 @@ _DEFAULT_ALLOWED_HOSTS = (
     "localhost",
     "localhost:*",
 )
+_DEFAULT_LEOAI_INITIAL_PASSWORD = "54ikun"
 
 _TOML_TO_ENV = {
     "leoai_base_url": "LEOAI_BASE_URL",
     "leoai_username": "LEOAI_USERNAME",
     "leoai_password_file": "LEOAI_PASSWORD_FILE",
+    "leoai_initial_password_file": "LEOAI_INITIAL_PASSWORD_FILE",
     "mcp_client_token_file": "MCP_CLIENT_TOKEN_FILE",
     "adapter_env": "ADAPTER_ENV",
     "leoai_tls_verify": "LEOAI_TLS_VERIFY",
@@ -38,9 +40,9 @@ _TOML_TO_ENV = {
     "mcp_dns_rebinding_protection": "MCP_DNS_REBINDING_PROTECTION",
     "mcp_allowed_hosts": "MCP_ALLOWED_HOSTS",
 }
-_TOML_PATH_FIELDS = {"leoai_password_file", "mcp_client_token_file"}
+_TOML_PATH_FIELDS = {"leoai_password_file", "leoai_initial_password_file", "mcp_client_token_file"}
 _TOML_LIST_FIELDS = {"mcp_allowed_plugin_ids", "mcp_allowed_hosts"}
-_TOML_INLINE_SECRET_FIELDS = {"leoai_password", "mcp_client_token"}
+_TOML_INLINE_SECRET_FIELDS = {"leoai_password", "leoai_initial_password", "mcp_client_token"}
 
 
 class SettingsError(ValueError):
@@ -53,6 +55,7 @@ class Settings:
     leoai_username: str
     leoai_password: SecretStr
     mcp_client_token: SecretStr
+    leoai_initial_password: SecretStr | None = None
     adapter_env: str = "production"
     leoai_tls_verify: bool = True
     leoai_connect_timeout_seconds: float = 5.0
@@ -76,6 +79,7 @@ class Settings:
         env: Mapping[str, str],
         *,
         leoai_password: str | None = None,
+        leoai_initial_password: str | None = None,
         mcp_client_token: str | None = None,
     ) -> Settings:
         base_url = _required(env, "LEOAI_BASE_URL").rstrip("/")
@@ -89,6 +93,11 @@ class Settings:
             raise SettingsError("production requires an https LEOAI_BASE_URL")
         username = _required(env, "LEOAI_USERNAME")
         password = leoai_password or _read_secret(_required(env, "LEOAI_PASSWORD_FILE"))
+        initial_password = (
+            leoai_initial_password
+            or _read_optional_secret(env, "LEOAI_INITIAL_PASSWORD_FILE")
+            or _DEFAULT_LEOAI_INITIAL_PASSWORD
+        )
         client_token = mcp_client_token or _read_secret(_required(env, "MCP_CLIENT_TOKEN_FILE"))
         tls_verify = _boolean(env, "LEOAI_TLS_VERIFY", True)
         if adapter_env == "production" and not tls_verify:
@@ -101,6 +110,7 @@ class Settings:
             leoai_base_url=base_url,
             leoai_username=username,
             leoai_password=SecretStr(password),
+            leoai_initial_password=SecretStr(initial_password) if initial_password else None,
             mcp_client_token=SecretStr(client_token),
             adapter_env=adapter_env,
             leoai_tls_verify=tls_verify,
@@ -197,6 +207,11 @@ def _read_secret(raw_path: str) -> str:
     if not value:
         raise SettingsError(f"secret file is empty: {raw_path}")
     return value
+
+
+def _read_optional_secret(env: Mapping[str, str], name: str) -> str | None:
+    raw_path = str(env.get(name) or "").strip()
+    return _read_secret(raw_path) if raw_path else None
 
 
 def _boolean(env: Mapping[str, str], name: str, default: bool) -> bool:
