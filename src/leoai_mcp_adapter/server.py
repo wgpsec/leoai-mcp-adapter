@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, RootModel, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, RootModel, WithJsonSchema, model_validator
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -130,7 +130,11 @@ DatabasePage = Annotated[int, Field(ge=1, le=1_000_000)]
 DatabasePageSize = Annotated[int, Field(ge=1, le=500)]
 DatabaseQueryTimeout = Annotated[int, Field(ge=1, le=300)]
 DatabaseText = Annotated[str, Field(max_length=4096)]
-DatabaseInteger = Annotated[int, Field(ge=-(2**63), le=2**63 - 1)]
+DatabaseInteger = Annotated[
+    int,
+    Field(ge=-(2**63), le=2**63 - 1),
+    WithJsonSchema({"type": "integer"}),
+]
 DatabaseFloat = Annotated[float, Field(ge=-1e308, le=1e308, allow_inf_nan=False)]
 DatabaseScalar = DatabaseText | DatabaseInteger | DatabaseFloat | bool | None
 DatabaseFilterValue = DatabaseScalar | Annotated[list[DatabaseScalar], Field(max_length=100)]

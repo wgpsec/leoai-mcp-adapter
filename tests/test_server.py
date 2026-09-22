@@ -9,11 +9,11 @@ import httpx
 import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter, ValidationError
 
 from leoai_mcp_adapter.client import LeoAIClient
 from leoai_mcp_adapter.config import Settings
-from leoai_mcp_adapter.server import create_app
+from leoai_mcp_adapter.server import DatabaseInteger, create_app
 
 
 def _settings() -> Settings:
@@ -260,6 +260,63 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
     assert "leo_invoke" not in names
     assert "leo_invoke_allowed_plugin" not in names
     assert len(names) == 67
+
+
+_INT64_SCHEMA_BOUNDS = {
+    9223372036854775807,
+    -9223372036854775808,
+    9223372036854776000,
+    -9223372036854776000,
+}
+
+
+def _numeric_bounds(value: object):
+    if isinstance(value, dict):
+        if "minimum" in value or "maximum" in value:
+            yield value.get("minimum"), value.get("maximum")
+        for child in value.values():
+            yield from _numeric_bounds(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _numeric_bounds(child)
+
+
+@pytest.mark.asyncio
+async def test_database_tools_publish_integer_values_without_int64_schema_bounds():
+    base = _settings()
+    settings = Settings(
+        leoai_base_url=base.leoai_base_url,
+        leoai_username=base.leoai_username,
+        leoai_password=base.leoai_password,
+        mcp_client_token=base.mcp_client_token,
+        mcp_tool_profile="operate",
+    )
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        tools = await session.list_tools()
+    await leoai.aclose()
+
+    published = {tool.name: tool.inputSchema for tool in tools.tools}
+    for name in (
+        "leo_delete_database_rows",
+        "leo_insert_database_row",
+        "leo_query_database_table",
+        "leo_update_database_rows",
+    ):
+        for minimum, maximum in _numeric_bounds(published[name]):
+            assert minimum not in _INT64_SCHEMA_BOUNDS
+            assert maximum not in _INT64_SCHEMA_BOUNDS
+    query_bounds = {bound for pair in _numeric_bounds(published["leo_query_database_table"]) for bound in pair}
+    assert 500 in query_bounds
+
+    integer = TypeAdapter(DatabaseInteger)
+    with pytest.raises(ValidationError):
+        integer.validate_python(2**63)
+    with pytest.raises(ValidationError):
+        integer.validate_python(-(2**63) - 1)
+    assert integer.validate_python(2**63 - 1) == 2**63 - 1
+    assert integer.validate_python(-(2**63)) == -(2**63)
 
 
 @pytest.mark.asyncio
