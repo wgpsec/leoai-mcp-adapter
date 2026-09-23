@@ -267,27 +267,21 @@ Phase 2.2a 在相同档位补充系统调查与控制：
 | `leo_remove_docker_container` | `POST /puppet-node/docker/remove-container` | 删除明确容器 |
 | `leo_remove_docker_image` | `POST /puppet-node/docker/remove-image` | 删除明确镜像引用 |
 
-Phase 2.2b 第一批在相同档位补充扫描能力：
+Phase 2.2b 第一批在相同档位补充扫描能力。LeoAI 已将可达性、端口、服务识别和
+指纹收成统一 network-probe 工作流，adapter 只封装这组接口：
 
 | MCP Tool | LeoAI API | 语义 |
 |---|---|---|
-| `leo_check_host_reachability` | `POST /puppet-node/host-reachable/scan` | 对最多 256 个有界主机执行主动可达性探测 |
-| `leo_start_port_scan` | `POST /puppet-node/port-scan/start-scan` | 对单个目标启动最多 4096 个端口的异步扫描 |
-| `leo_query_port_scan` | `POST /puppet-node/port-scan/query-result` | 查询明确的端口扫描 taskId |
-| `leo_control_port_scan` | `/puppet-node/port-scan/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
-| `leo_start_fingerprint_scan` | `POST /puppet-node/fingerprint/start-scan` | 使用 LeoAI VFS 中既有指纹扫描最多 128 个结构化 HTTP/TCP 目标 |
-| `leo_query_fingerprint_scan` | `POST /puppet-node/fingerprint/query-result` | 查询明确的指纹扫描 taskId |
-| `leo_control_fingerprint_scan` | `/puppet-node/fingerprint/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
-| `leo_start_recon_scan` | `POST /puppet-node/recon-scan/start-scan` | 使用结构化 protocol/tags/fingerprintIds 选择器启动侦察扫描 |
-| `leo_query_recon_scan` | `POST /puppet-node/recon-scan/query-result` | 查询明确的侦察扫描 taskId |
-| `leo_control_recon_scan` | `/puppet-node/recon-scan/{pause,resume,stop}-scan` | 以固定枚举控制明确任务 |
+| `leo_preview_network_probe` | `POST /puppet-node/network-probe/workflow/preview` | 预览目标展开、端口策略和执行阶段，不启动扫描 |
+| `leo_start_network_probe` | `POST /puppet-node/network-probe/workflow/start` | 启动一个有界异步扫描工作流 |
+| `leo_query_network_probe` | `/puppet-node/network-probe/workflow/{query,results/query,fingerprints/query}` | 查询 summary、分页 endpoints 或指纹匹配 |
+| `leo_control_network_probe` | `/puppet-node/network-probe/workflow/{pause,resume,stop,delete}` | 以固定枚举控制明确任务 |
 
-主机可达性、扫描启动和扫描控制都会主动影响目标或任务状态，统一按 Action 处理，
-遇到认证过期不得重放。只有任务查询可以重登并重试一次。HTTP 目标只接受
-`protocol=http + baseUrl`，TCP 目标只接受 `protocol=tcp + host + port`，额外字段
-直接拒绝。指纹 ID 必须指向 LeoAI VFS 中既有配置，adapter 不提供动态规则上传。
-指纹与侦察扫描依赖 `ComponentInvokeCapable`，PHP Puppet 不支持时明确返回 capability
-unsupported，不伪造降级结果。
+目标接受 IP/CIDR/URL/`host:port`。阶段只能是 `REACHABILITY`、`PORT_SCAN`、
+`SERVICE_PROBE`、`FINGERPRINT`，并保持固定依赖顺序。指纹 tags/ids 必须指向
+LeoAI 既有规则，adapter 不提供动态规则上传。`start`/`control` 按 Action 处理，
+认证过期不得重放；`preview`/`query` 可以重登并重试一次。旧的 host/port/fingerprint/recon
+scan Tools 已删除，不要再调用。
 
 Phase 2.2b 后续批次已按真实上游契约实现：
 
@@ -308,10 +302,11 @@ Phase 2.2b 后续批次已按真实上游契约实现：
 自启仍属于持久化，不进入 `operate`。所有能力均为固定 endpoint 和严格 schema，不能
 退化为通用请求工具。
 
-终端采用 LeoAI 现有有状态协议，不由 adapter 猜测命令何时完成。Agent 必须先
-打开 terminal，再写入命令、按需读取，并在结束时 stop；一次调用的输入和响应均
-受 adapter 全局上限约束。所有写操作遇到 `401` 只重新建立 adapter 登录状态，
-但不得自动重放原动作，避免重复命令或重复修改。
+终端采用 LeoAI 现有有状态协议，不由 adapter 猜测命令何时完成。`init` 和 `write`
+会请求 `includeOutput=true`，以便一次调用带回 PTY/backend 提示或写入后的输出。
+Agent 仍必须先打开 terminal，再写入命令；空的后续 read 不能否定已经返回的输出。
+一次调用的输入和响应均受 adapter 全局上限约束。所有写操作遇到 `401` 只重新建立
+adapter 登录状态，但不得自动重放原动作，避免重复命令或重复修改。
 
 ### 6.4.1 上线登记工具
 
@@ -506,8 +501,9 @@ PHP 8.2。验证使用合成 `/tmp` canary，不读取节点真实凭据：
   PHP 报告 25 项能力，Java 报告 36 项能力；
 - 默认关闭的文件读取开启后，两种 Runtime 均通过 16 字节边界、截断标记和
   nextOffset 验证；
-- LeoAI 1.0.1 缺少 `/puppet-node/file/profile`，adapter 通过只读 `list-root`
-  推导 POSIX/Windows 路径语义，不伪造未知 capability；
+- LeoAI 1.0.1 缺少 `/puppet-node/file/profile`，仅 `LEOAI_PROTOCOL_PROFILE=1x`
+  时 adapter 通过只读 `list-root` 推导 POSIX/Windows 路径语义；2.x 不再调用该
+  已删除接口，也不伪造未知 capability；
 - LeoAI 1.0.1 尚无 Project API，两个 Project Tool 明确返回
   `leoai_capability_unsupported`，不以空列表或虚假 Project 降级；
 - 初始账号的 `passwordChangeRequired=true` 会使 readiness 失败，需部署者先在
@@ -571,10 +567,10 @@ Action Tool 回放：
 
 Phase 2.2a 已在 `operate` 中实现进程、服务、网络连接和 Docker 工具。Phase 2.2b
 已实现扫描、结构化数据库查询与行级变更、有界文件上传/下载任务，以及部署者
-allowlist 内的既有插件调用。allowlist 为空时 `operate` 注册 67 个 Tool，开启可选
-文件读取后为 68 个；非空插件 allowlist 会再注册一个固定插件调用 Tool。
+allowlist 内的既有插件调用。allowlist 为空时 `operate` 注册 61 个 Tool，开启可选
+文件读取后为 62 个；非空插件 allowlist 会再注册一个固定插件调用 Tool。
 开启 `MCP_ENABLE_ONBOARDING` 后，`operate` 再注册 7 个生成器与 Puppet 登记 Tool，
-合计 74 个；同时开启文件读取后为 75 个。`privileged` 即使未开该开关也会注册这 7 个
+合计 68 个；同时开启文件读取后为 69 个。`privileged` 即使未开该开关也会注册这 7 个
 Tool。默认 `observe` 不包含它们。
 
 以下 `privileged` 能力必须逐项形成独立安全设计，不能因启用 `operate` 自动获得：

@@ -19,7 +19,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from .client import LeoAIClient
 from .config import Settings
 from .errors import LeoAIError
-from .tools import LeoAITools
+from .tools import LeoAITools, build_network_probe_scan
 
 
 def create_app(settings: Settings, leoai: LeoAIClient):
@@ -103,11 +103,22 @@ RemoteAddress = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[^
 PositivePid = Annotated[int, Field(ge=1, le=2_147_483_647)]
 NetworkPort = Annotated[int, Field(ge=1, le=65535)]
 NetworkEntryLimit = Annotated[int, Field(ge=1, le=2000)]
-ScanHost = Annotated[str, Field(min_length=1, max_length=253, pattern=r"^[^\x00-\x1f\x7f]+$")]
-ScanHosts = Annotated[list[ScanHost], Field(min_length=1, max_length=256)]
-ScanPorts = Annotated[list[NetworkPort], Field(min_length=1, max_length=4096)]
-ScanTimeout = Annotated[int, Field(ge=1, le=300000)]
-ScanThreads = Annotated[int, Field(ge=1, le=100)]
+ProbeTarget = Annotated[str, Field(min_length=1, max_length=512, pattern=r"^[^\x00-\x1f\x7f]+$")]
+ProbeTargets = Annotated[list[ProbeTarget], Field(min_length=1, max_length=256)]
+ProbeExclude = Annotated[list[ProbeTarget], Field(min_length=1, max_length=256)]
+ProbePorts = Annotated[list[NetworkPort], Field(min_length=1, max_length=4096)]
+ProbePortRange = Annotated[str, Field(min_length=3, max_length=21, pattern=r"^[0-9]{1,5}-[0-9]{1,5}$")]
+ProbePortRanges = Annotated[list[ProbePortRange], Field(min_length=1, max_length=64)]
+ProbeWorkers = Annotated[int, Field(ge=1, le=256)]
+ProbeTimeout = Annotated[int, Field(ge=100, le=300000)]
+ProbePage = Annotated[int, Field(ge=1)]
+ProbePageSize = Annotated[int, Field(ge=1, le=200)]
+ProbeStage = Literal["REACHABILITY", "PORT_SCAN", "SERVICE_PROBE", "FINGERPRINT"]
+ProbeStages = Annotated[list[ProbeStage], Field(min_length=1, max_length=4)]
+PortProfile = Literal["quick", "standard", "extended", "custom"]
+ProbeView = Literal["summary", "results", "fingerprints"]
+ProbeAction = Literal["pause", "resume", "stop", "delete"]
+TerminalWaitMs = Annotated[int, Field(ge=0, le=10000)]
 DockerTail = Annotated[int, Field(ge=1, le=10000)]
 DockerTimeout = Annotated[int, Field(ge=0, le=300)]
 DockerReference = Annotated[
@@ -116,32 +127,9 @@ DockerReference = Annotated[
 ]
 ServiceAction = Literal["start", "stop", "restart"]
 DockerContainerAction = Literal["start", "stop", "restart", "pause", "unpause"]
-ScanAction = Literal["pause", "resume", "stop"]
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False)
 ACTION = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
-
-
-class HttpScanTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    protocol: Literal["http"]
-    baseUrl: Annotated[
-        str,
-        Field(min_length=8, max_length=2048, pattern=r"^https?://[^\x00-\x20\x7f]+$"),
-    ]
-
-
-class TcpScanTarget(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    protocol: Literal["tcp"]
-    host: ScanHost
-    port: NetworkPort
-
-
-ScanTarget = Annotated[HttpScanTarget | TcpScanTarget, Field(discriminator="protocol")]
-ScanTargets = Annotated[list[ScanTarget], Field(min_length=1, max_length=128)]
 SelectorTag = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")]
 SelectorTags = Annotated[list[SelectorTag], Field(max_length=64)]
 FingerprintIds = Annotated[list[Identifier], Field(max_length=128)]
@@ -178,12 +166,21 @@ VfsPath = Annotated[
 ]
 
 
-class ReconRuleSelector(BaseModel):
+class NetworkProbeScan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    protocol: Literal["http", "tcp"] | None = None
-    tags: SelectorTags = Field(default_factory=list)
-    fingerprintIds: FingerprintIds = Field(default_factory=list)
+    name: BoundedText | None = None
+    targets: ProbeTargets
+    exclude: ProbeExclude | None = None
+    portProfile: PortProfile | None = None
+    portRanges: ProbePortRanges | None = None
+    ports: ProbePorts | None = None
+    excludePorts: ProbePorts | None = None
+    workers: ProbeWorkers | None = None
+    timeoutMs: ProbeTimeout | None = None
+    stages: ProbeStages | None = None
+    fingerprintTags: SelectorTags | None = None
+    fingerprintIds: FingerprintIds | None = None
 
 
 class DatabaseObjectReference(BaseModel):
@@ -290,6 +287,24 @@ def _validate_plugin_value(value: Any, *, depth: int, remaining: list[int]) -> N
     raise ValueError("pluginParam contains a non-JSON value")
 
 
+
+def _network_probe_scan(scan: NetworkProbeScan) -> dict[str, object]:
+    return build_network_probe_scan(
+        targets=scan.targets,
+        exclude=scan.exclude,
+        name=scan.name,
+        port_profile=scan.portProfile,
+        port_ranges=scan.portRanges,
+        ports=scan.ports,
+        exclude_ports=scan.excludePorts,
+        workers=scan.workers,
+        timeout_ms=scan.timeoutMs,
+        stages=scan.stages,
+        fingerprint_tags=scan.fingerprintTags,
+        fingerprint_ids=scan.fingerprintIds,
+    )
+
+
 def _register_tools(
     mcp: FastMCP,
     tools: LeoAITools,
@@ -378,8 +393,9 @@ def _register_tools(
                 sessionId,
                 terminalId,
                 operation="opened",
-                command_type="write",
-                command="init",
+                command_type="init",
+                command="",
+                include_output=True,
             )
 
         @mcp.tool(name="leo_write_terminal", annotations=ACTION)
@@ -395,17 +411,22 @@ def _register_tools(
                 operation="written",
                 command_type="write",
                 command=input,
+                include_output=True,
             )
 
         @mcp.tool(name="leo_read_terminal", annotations=READ_ONLY)
-        async def read_terminal(sessionId: Identifier, terminalId: Identifier) -> dict[str, object]:
+        async def read_terminal(
+            sessionId: Identifier,
+            terminalId: Identifier,
+            waitMs: TerminalWaitMs | None = None,
+        ) -> dict[str, object]:
             """Read one bounded output chunk from a LeoAI terminal process."""
             return await tools.terminal_action(
                 sessionId,
                 terminalId,
                 operation="read",
                 command_type="read",
-                command="read",
+                command="" if waitMs is None else str(waitMs),
             )
 
         @mcp.tool(name="leo_stop_terminal", annotations=DESTRUCTIVE)
@@ -538,98 +559,49 @@ def _register_tools(
             """Get a bounded network-connection summary for one Session."""
             return await tools.get_network_connection_summary(sessionId)
 
-        @mcp.tool(name="leo_check_host_reachability", annotations=ACTION)
-        async def check_host_reachability(
+        @mcp.tool(name="leo_preview_network_probe", annotations=READ_ONLY)
+        async def preview_network_probe(
             sessionId: Identifier,
-            hosts: ScanHosts,
-            timeoutMs: ScanTimeout = 3000,
+            scan: NetworkProbeScan,
         ) -> dict[str, object]:
-            """Actively test a bounded list of hosts for reachability."""
-            return await tools.check_host_reachability(sessionId, hosts, timeoutMs)
+            """Preview a bounded LeoAI network-probe workflow without starting it."""
+            return await tools.preview_network_probe(sessionId, _network_probe_scan(scan))
 
-        @mcp.tool(name="leo_start_port_scan", annotations=ACTION)
-        async def start_port_scan(
+        @mcp.tool(name="leo_start_network_probe", annotations=ACTION)
+        async def start_network_probe(
             sessionId: Identifier,
-            host: ScanHost,
-            ports: ScanPorts,
-            timeoutMs: ScanTimeout = 3000,
-            threads: ScanThreads = 10,
+            scan: NetworkProbeScan,
         ) -> dict[str, object]:
-            """Start one bounded asynchronous port scan."""
-            return await tools.start_port_scan(sessionId, host, ports, timeoutMs, threads)
+            """Start one bounded asynchronous LeoAI network-probe workflow."""
+            return await tools.start_network_probe(sessionId, _network_probe_scan(scan))
 
-        @mcp.tool(name="leo_query_port_scan", annotations=READ_ONLY)
-        async def query_port_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
-            """Query one explicit asynchronous port-scan task."""
-            return await tools.query_port_scan(sessionId, taskId)
-
-        @mcp.tool(name="leo_control_port_scan", annotations=DESTRUCTIVE)
-        async def control_port_scan(
+        @mcp.tool(name="leo_query_network_probe", annotations=READ_ONLY)
+        async def query_network_probe(
             sessionId: Identifier,
             taskId: Identifier,
-            action: ScanAction,
+            view: ProbeView = "summary",
+            page: ProbePage | None = None,
+            pageSize: ProbePageSize | None = None,
+            endpointId: Identifier | None = None,
         ) -> dict[str, object]:
-            """Pause, resume, or stop one explicit port-scan task."""
-            return await tools.control_port_scan(sessionId, taskId, action)
-
-        @mcp.tool(name="leo_start_fingerprint_scan", annotations=ACTION)
-        async def start_fingerprint_scan(
-            sessionId: Identifier,
-            fingerprintId: Identifier,
-            targets: ScanTargets,
-            threads: ScanThreads = 10,
-        ) -> dict[str, object]:
-            """Start one fingerprint scan against bounded HTTP or TCP targets."""
-            return await tools.start_fingerprint_scan(
+            """Query one explicit network-probe workflow summary, result page, or fingerprint matches."""
+            return await tools.query_network_probe(
                 sessionId,
-                fingerprintId,
-                [target.model_dump() for target in targets],
-                threads,
+                taskId,
+                view=view,
+                page=page,
+                page_size=pageSize,
+                endpoint_id=endpointId,
             )
 
-        @mcp.tool(name="leo_query_fingerprint_scan", annotations=READ_ONLY)
-        async def query_fingerprint_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
-            """Query one explicit asynchronous fingerprint-scan task."""
-            return await tools.query_fingerprint_scan(sessionId, taskId)
-
-        @mcp.tool(name="leo_control_fingerprint_scan", annotations=DESTRUCTIVE)
-        async def control_fingerprint_scan(
+        @mcp.tool(name="leo_control_network_probe", annotations=DESTRUCTIVE)
+        async def control_network_probe(
             sessionId: Identifier,
             taskId: Identifier,
-            action: ScanAction,
+            action: ProbeAction,
         ) -> dict[str, object]:
-            """Pause, resume, or stop one explicit fingerprint-scan task."""
-            return await tools.control_fingerprint_scan(sessionId, taskId, action)
-
-        @mcp.tool(name="leo_start_recon_scan", annotations=ACTION)
-        async def start_recon_scan(
-            sessionId: Identifier,
-            targets: ScanTargets,
-            ruleSelector: ReconRuleSelector | None = None,
-            threads: ScanThreads = 10,
-        ) -> dict[str, object]:
-            """Start one bounded reconnaissance scan with a structured rule selector."""
-            selector = ruleSelector.model_dump(exclude_none=True) if ruleSelector is not None else None
-            return await tools.start_recon_scan(
-                sessionId,
-                [target.model_dump() for target in targets],
-                selector,
-                threads,
-            )
-
-        @mcp.tool(name="leo_query_recon_scan", annotations=READ_ONLY)
-        async def query_recon_scan(sessionId: Identifier, taskId: Identifier) -> dict[str, object]:
-            """Query one explicit asynchronous reconnaissance-scan task."""
-            return await tools.query_recon_scan(sessionId, taskId)
-
-        @mcp.tool(name="leo_control_recon_scan", annotations=DESTRUCTIVE)
-        async def control_recon_scan(
-            sessionId: Identifier,
-            taskId: Identifier,
-            action: ScanAction,
-        ) -> dict[str, object]:
-            """Pause, resume, or stop one explicit reconnaissance-scan task."""
-            return await tools.control_recon_scan(sessionId, taskId, action)
+            """Pause, resume, stop, or delete one explicit network-probe workflow."""
+            return await tools.control_network_probe(sessionId, taskId, action)
 
         @mcp.tool(name="leo_list_database_dialects", annotations=READ_ONLY)
         async def list_database_dialects() -> dict[str, object]:

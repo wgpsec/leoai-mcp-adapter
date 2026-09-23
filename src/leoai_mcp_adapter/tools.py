@@ -9,6 +9,109 @@ from typing import Any
 from .client import LeoAIClient
 from .errors import LeoAIError
 
+_NETWORK_PROBE_PREFIX = "/puppet-node/network-probe/workflow"
+_NETWORK_PROBE_STAGES = ("REACHABILITY", "PORT_SCAN", "SERVICE_PROBE", "FINGERPRINT")
+
+
+def build_network_probe_scan(
+    *,
+    targets: list[str],
+    exclude: list[str] | None = None,
+    name: str | None = None,
+    port_profile: str | None = None,
+    port_ranges: list[str] | None = None,
+    ports: list[int] | None = None,
+    exclude_ports: list[int] | None = None,
+    workers: int | None = None,
+    timeout_ms: int | None = None,
+    stages: list[str] | None = None,
+    fingerprint_tags: list[str] | None = None,
+    fingerprint_ids: list[str] | None = None,
+) -> dict[str, object]:
+    fingerprint_tags = [tag for tag in fingerprint_tags or [] if tag]
+    fingerprint_ids = [item for item in fingerprint_ids or [] if item]
+    target_input: dict[str, object] = {"items": list(targets)}
+    if exclude:
+        target_input["exclude"] = list(exclude)
+    scan: dict[str, object] = {"targets": target_input}
+    if name:
+        scan["name"] = name
+    port_policy = _network_probe_port_policy(port_profile, port_ranges, ports, exclude_ports)
+    if port_policy is not None:
+        scan["portPolicy"] = port_policy
+    execution: dict[str, object] = {}
+    if workers is not None:
+        execution["workers"] = workers
+    if timeout_ms is not None:
+        execution["timeoutMs"] = timeout_ms
+    if execution:
+        scan["execution"] = execution
+    if fingerprint_tags or fingerprint_ids:
+        fingerprint: dict[str, object] = {}
+        if fingerprint_tags:
+            fingerprint["tags"] = fingerprint_tags
+        if fingerprint_ids:
+            fingerprint["ids"] = fingerprint_ids
+        scan["fingerprint"] = fingerprint
+    resolved_stages = _resolve_network_probe_stages(
+        stages,
+        has_fingerprint=bool(fingerprint_tags or fingerprint_ids),
+    )
+    if resolved_stages is not None:
+        scan["stages"] = resolved_stages
+    return scan
+
+
+def _network_probe_port_policy(
+    profile: str | None,
+    ranges: list[str] | None,
+    ports: list[int] | None,
+    exclude_ports: list[int] | None,
+) -> dict[str, object] | None:
+    if profile is None and not ranges and not ports and not exclude_ports:
+        return None
+    resolved_profile = profile
+    if resolved_profile is None:
+        resolved_profile = "custom" if ports or ranges else "standard"
+    if resolved_profile == "custom" and not ports and not ranges:
+        raise LeoAIError("tool_input_invalid", "custom port profile requires ports or portRanges")
+    policy: dict[str, object] = {"profile": resolved_profile}
+    if ranges:
+        policy["ranges"] = list(ranges)
+    if ports:
+        policy["include"] = list(ports)
+    if exclude_ports:
+        policy["exclude"] = list(exclude_ports)
+    return policy
+
+
+def _resolve_network_probe_stages(
+    stages: list[str] | None,
+    *,
+    has_fingerprint: bool,
+) -> list[str] | None:
+    if stages is None:
+        return list(_NETWORK_PROBE_STAGES) if has_fingerprint else None
+    selected: list[str] = []
+    seen: set[str] = set()
+    for stage in stages:
+        name = stage.strip().upper()
+        if name not in _NETWORK_PROBE_STAGES:
+            raise LeoAIError("tool_input_invalid", f"unsupported network probe stage: {stage}")
+        if name in seen:
+            continue
+        selected.append(name)
+        seen.add(name)
+    if not selected:
+        raise LeoAIError("tool_input_invalid", "at least one network probe stage is required")
+    if "SERVICE_PROBE" in seen and "PORT_SCAN" not in seen:
+        raise LeoAIError("tool_input_invalid", "SERVICE_PROBE requires PORT_SCAN")
+    if "FINGERPRINT" in seen and "SERVICE_PROBE" not in seen:
+        raise LeoAIError("tool_input_invalid", "FINGERPRINT requires SERVICE_PROBE and PORT_SCAN")
+    if has_fingerprint and "FINGERPRINT" not in seen:
+        raise LeoAIError("tool_input_invalid", "fingerprint tags or ids require the FINGERPRINT stage")
+    return [stage for stage in _NETWORK_PROBE_STAGES if stage in seen]
+
 
 class LeoAITools:
     def __init__(
@@ -146,7 +249,7 @@ class LeoAITools:
                 json={"sessionId": session_id},
             )
         except LeoAIError as error:
-            if error.code != "leoai_capability_unsupported":
+            if self._protocol_profile != "1x" or error.code != "leoai_capability_unsupported":
                 raise
             root_listing = await self._request(
                 "POST",
@@ -461,17 +564,21 @@ class LeoAITools:
         operation: str,
         command_type: str,
         command: str,
+        include_output: bool = False,
     ) -> dict[str, object]:
         request = self._request if command_type == "read" else self._action_request
+        payload: dict[str, object] = {
+            "sessionId": session_id,
+            "processId": terminal_id,
+            "cmd": command,
+            "type": command_type,
+        }
+        if include_output:
+            payload["includeOutput"] = True
         data = await request(
             "POST",
             "/puppet-node/command/exec-command",
-            json={
-                "sessionId": session_id,
-                "processId": terminal_id,
-                "cmd": command,
-                "type": command_type,
-            },
+            json=payload,
         )
         if not isinstance(data, dict):
             raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid terminal result")
@@ -659,154 +766,109 @@ class LeoAITools:
             {"sessionId": session_id},
         )
 
-    async def check_host_reachability(
+    async def preview_network_probe(
         self,
         session_id: str,
-        hosts: list[str],
-        timeout_ms: int,
+        scan: dict[str, object],
     ) -> dict[str, object]:
-        data = await self._action_request(
+        data = await self._request(
             "POST",
-            "/puppet-node/host-reachable/scan",
-            json={
-                "sessionId": session_id,
-                "scanHosts": hosts,
-                "scanTimeout": timeout_ms,
-            },
+            f"{_NETWORK_PROBE_PREFIX}/preview",
+            json={"sessionId": session_id, "scan": scan},
         )
         if not isinstance(data, dict):
-            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid host reachability result")
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid network probe preview")
         return {
             "untrusted_external_content": True,
-            "hostReachability": _sanitize_external(data),
+            "scanPreview": _sanitize_external(data),
         }
 
-    async def start_port_scan(
+    async def start_network_probe(
         self,
         session_id: str,
-        host: str,
-        ports: list[int],
-        timeout_ms: int,
-        threads: int,
+        scan: dict[str, object],
     ) -> dict[str, object]:
         data = await self._action_request(
             "POST",
-            "/puppet-node/port-scan/start-scan",
-            json={
-                "sessionId": session_id,
-                "scanHost": host,
-                "scanPorts": ports,
-                "scanTimeout": timeout_ms,
-                "threadsNum": threads,
-            },
+            f"{_NETWORK_PROBE_PREFIX}/start",
+            json={"sessionId": session_id, "scan": scan},
         )
-        return self._scan_start_result("port", data)
+        return self._scan_start_result("network-probe", data)
 
-    async def query_port_scan(self, session_id: str, task_id: str) -> dict[str, object]:
-        return await self._query_scan(
-            "port",
-            "/puppet-node/port-scan",
-            session_id,
-            task_id,
-        )
-
-    async def control_port_scan(
+    async def query_network_probe(
         self,
         session_id: str,
         task_id: str,
-        action: str,
+        *,
+        view: str,
+        page: int | None,
+        page_size: int | None,
+        endpoint_id: str | None = None,
     ) -> dict[str, object]:
-        return await self._control_scan(
-            "port",
-            "/puppet-node/port-scan",
-            session_id,
-            task_id,
-            action,
-        )
-
-    async def start_fingerprint_scan(
-        self,
-        session_id: str,
-        fingerprint_id: str,
-        targets: list[dict[str, object]],
-        threads: int,
-    ) -> dict[str, object]:
-        data = await self._action_request(
-            "POST",
-            "/puppet-node/fingerprint/start-scan",
-            json={
-                "sessionId": session_id,
-                "fingerprintId": fingerprint_id,
-                "targets": targets,
-                "threads": threads,
-            },
-        )
-        return self._scan_start_result("fingerprint", data)
-
-    async def query_fingerprint_scan(self, session_id: str, task_id: str) -> dict[str, object]:
-        return await self._query_scan(
-            "fingerprint",
-            "/puppet-node/fingerprint",
-            session_id,
-            task_id,
-        )
-
-    async def control_fingerprint_scan(
-        self,
-        session_id: str,
-        task_id: str,
-        action: str,
-    ) -> dict[str, object]:
-        return await self._control_scan(
-            "fingerprint",
-            "/puppet-node/fingerprint",
-            session_id,
-            task_id,
-            action,
-        )
-
-    async def start_recon_scan(
-        self,
-        session_id: str,
-        targets: list[dict[str, object]],
-        rule_selector: dict[str, object] | None,
-        threads: int,
-    ) -> dict[str, object]:
+        if view == "summary":
+            if page is not None or page_size is not None or endpoint_id is not None:
+                raise LeoAIError(
+                    "tool_input_invalid",
+                    "page, pageSize, and endpointId are only valid for results or fingerprints",
+                )
+            data = await self._request(
+                "POST",
+                f"{_NETWORK_PROBE_PREFIX}/query",
+                json={"sessionId": session_id, "taskId": task_id},
+            )
+            return self._scan_result("network-probe", "queried", data, task_id=task_id)
+        if view == "results":
+            if endpoint_id is not None:
+                raise LeoAIError("tool_input_invalid", "endpointId is only valid for fingerprints")
+            data = await self._request(
+                "POST",
+                f"{_NETWORK_PROBE_PREFIX}/results/query",
+                json={
+                    "sessionId": session_id,
+                    "taskId": task_id,
+                    "page": 1 if page is None else page,
+                    "pageSize": 50 if page_size is None else page_size,
+                },
+            )
+            return self._scan_result("network-probe", "results", data, task_id=task_id)
+        if view != "fingerprints":
+            raise LeoAIError("tool_input_invalid", "unsupported network probe view")
         payload: dict[str, object] = {
             "sessionId": session_id,
-            "targets": targets,
-            "threads": threads,
+            "taskId": task_id,
+            "page": 1 if page is None else page,
+            "pageSize": 50 if page_size is None else page_size,
         }
-        if rule_selector is not None:
-            payload["ruleSelector"] = rule_selector
-        data = await self._action_request(
+        if endpoint_id is not None:
+            payload["endpointId"] = endpoint_id
+        data = await self._request(
             "POST",
-            "/puppet-node/recon-scan/start-scan",
+            f"{_NETWORK_PROBE_PREFIX}/fingerprints/query",
             json=payload,
         )
-        return self._scan_start_result("recon", data)
+        return self._scan_result("network-probe", "fingerprints", data, task_id=task_id)
 
-    async def query_recon_scan(self, session_id: str, task_id: str) -> dict[str, object]:
-        return await self._query_scan(
-            "recon",
-            "/puppet-node/recon-scan",
-            session_id,
-            task_id,
-        )
-
-    async def control_recon_scan(
+    async def control_network_probe(
         self,
         session_id: str,
         task_id: str,
         action: str,
     ) -> dict[str, object]:
-        return await self._control_scan(
-            "recon",
-            "/puppet-node/recon-scan",
-            session_id,
-            task_id,
-            action,
+        endpoints = {
+            "pause": "pause",
+            "resume": "resume",
+            "stop": "stop",
+            "delete": "delete",
+        }
+        endpoint = endpoints.get(action)
+        if endpoint is None:
+            raise LeoAIError("tool_input_invalid", "unsupported network probe action")
+        data = await self._action_request(
+            "POST",
+            f"{_NETWORK_PROBE_PREFIX}/{endpoint}",
+            json={"sessionId": session_id, "taskId": task_id},
         )
+        return self._scan_result("network-probe", action, data, task_id=task_id)
 
     async def list_database_dialects(self) -> dict[str, object]:
         data = await self._request("GET", "/puppet-node/sql/dialects")
@@ -1289,44 +1351,7 @@ class LeoAITools:
     def _scan_start_result(self, scan_type: str, data: object) -> dict[str, object]:
         if not isinstance(data, dict) or not isinstance(data.get("taskId"), str) or not data["taskId"]:
             raise LeoAIError("leoai_protocol_error", "LeoAI returned a scan start without a task ID")
-        return self._scan_result(scan_type, "started", data)
-
-    async def _query_scan(
-        self,
-        scan_type: str,
-        endpoint_prefix: str,
-        session_id: str,
-        task_id: str,
-    ) -> dict[str, object]:
-        data = await self._request(
-            "POST",
-            f"{endpoint_prefix}/query-result",
-            json={"sessionId": session_id, "taskId": task_id},
-        )
-        return self._scan_result(scan_type, "queried", data, task_id=task_id)
-
-    async def _control_scan(
-        self,
-        scan_type: str,
-        endpoint_prefix: str,
-        session_id: str,
-        task_id: str,
-        action: str,
-    ) -> dict[str, object]:
-        endpoints = {
-            "pause": "pause-scan",
-            "resume": "resume-scan",
-            "stop": "stop-scan",
-        }
-        endpoint = endpoints.get(action)
-        if endpoint is None:
-            raise LeoAIError("tool_input_invalid", "unsupported scan action")
-        data = await self._action_request(
-            "POST",
-            f"{endpoint_prefix}/{endpoint}",
-            json={"sessionId": session_id, "taskId": task_id},
-        )
-        return self._scan_result(scan_type, action, data, task_id=task_id)
+        return self._scan_result(scan_type, "started", data, task_id=data["taskId"])
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         async with self._limit_lock:

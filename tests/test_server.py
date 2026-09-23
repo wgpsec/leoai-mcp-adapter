@@ -247,16 +247,10 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
         "leo_control_service",
         "leo_list_network_connections",
         "leo_get_network_connection_summary",
-        "leo_check_host_reachability",
-        "leo_start_port_scan",
-        "leo_query_port_scan",
-        "leo_control_port_scan",
-        "leo_start_fingerprint_scan",
-        "leo_query_fingerprint_scan",
-        "leo_control_fingerprint_scan",
-        "leo_start_recon_scan",
-        "leo_query_recon_scan",
-        "leo_control_recon_scan",
+        "leo_preview_network_probe",
+        "leo_start_network_probe",
+        "leo_query_network_probe",
+        "leo_control_network_probe",
         "leo_list_database_dialects",
         "leo_get_database_runtime_capabilities",
         "leo_list_databases",
@@ -292,7 +286,7 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
     assert "leo_add_puppet" not in names
     assert "leo_generate_memory_shell" not in names
     assert "leo_create_project" not in names
-    assert len(names) == 67
+    assert len(names) == 61
 
 
 _INT64_SCHEMA_BOUNDS = {
@@ -441,19 +435,37 @@ async def test_operate_terminal_actions_preserve_the_leoai_terminal_protocol():
             {"sessionId": "session-1", "terminalId": "term-1", "input": "printf canary\n"},
         )
         read = await session.call_tool("leo_read_terminal", {"sessionId": "session-1", "terminalId": "term-1"})
+        waited = await session.call_tool(
+            "leo_read_terminal",
+            {"sessionId": "session-1", "terminalId": "term-1", "waitMs": 250},
+        )
         stopped = await session.call_tool("leo_stop_terminal", {"sessionId": "session-1", "terminalId": "term-1"})
     await leoai.aclose()
 
     assert requests == [
-        {"sessionId": "session-1", "processId": "term-1", "cmd": "init", "type": "write"},
-        {"sessionId": "session-1", "processId": "term-1", "cmd": "printf canary\n", "type": "write"},
-        {"sessionId": "session-1", "processId": "term-1", "cmd": "read", "type": "read"},
+        {
+            "sessionId": "session-1",
+            "processId": "term-1",
+            "cmd": "",
+            "type": "init",
+            "includeOutput": True,
+        },
+        {
+            "sessionId": "session-1",
+            "processId": "term-1",
+            "cmd": "printf canary\n",
+            "type": "write",
+            "includeOutput": True,
+        },
+        {"sessionId": "session-1", "processId": "term-1", "cmd": "", "type": "read"},
+        {"sessionId": "session-1", "processId": "term-1", "cmd": "250", "type": "read"},
         {"sessionId": "session-1", "processId": "term-1", "cmd": "", "type": "stop"},
     ]
     for result, operation in (
         (opened, "opened"),
         (written, "written"),
         (read, "read"),
+        (waited, "read"),
         (stopped, "stopped"),
     ):
         assert result.isError is False
@@ -626,180 +638,159 @@ async def test_operate_process_and_network_tools_use_fixed_bounded_contracts():
 
 
 @pytest.mark.asyncio
-async def test_operate_host_reachability_scan_uses_a_fixed_bounded_action_contract():
+async def test_operate_previews_and_starts_a_network_probe_workflow():
     requests: list[tuple[str, dict[str, object]]] = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        login = _login_ok(request)
+        if login is not None:
+            return login
         payload = json.loads(request.read())
         requests.append((request.url.path, payload))
+        if request.url.path.endswith("/preview"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "preview": {"warnings": ["large cidr"], "apiKey": "hidden"},
+                        "errors": [],
+                    },
+                },
+            )
         return httpx.Response(
             200,
-            json={
-                "code": 200,
-                "data": {
-                    "reachableHosts": ["127.0.0.1"],
-                    "unreachableHosts": ["192.0.2.1"],
-                    "authorization": "must-not-leak",
+            json={"code": 200, "data": {"taskId": "probe-task-1", "status": "RUNNING", "token": "hidden"}},
+        )
+
+    settings = _operate_settings()
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        previewed = await session.call_tool(
+            "leo_preview_network_probe",
+            {
+                "sessionId": "session-1",
+                "scan": {
+                    "targets": ["10.0.0.0/24", "http://app.internal:8080/health"],
+                    "exclude": ["10.0.0.1"],
+                    "portProfile": "custom",
+                    "ports": [22, 8080],
+                    "timeoutMs": 1500,
+                    "workers": 4,
+                    "stages": ["REACHABILITY", "PORT_SCAN"],
                 },
             },
         )
-
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
-    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
-    app = create_app(settings, leoai)
-    async with _mcp_session(app) as session:
-        result = await session.call_tool(
-            "leo_check_host_reachability",
+        started = await session.call_tool(
+            "leo_start_network_probe",
             {
                 "sessionId": "session-1",
-                "hosts": ["127.0.0.1", "192.0.2.1"],
-                "timeoutMs": 2500,
+                "scan": {
+                    "targets": ["127.0.0.1"],
+                    "fingerprintIds": ["weblogic_any"],
+                    "fingerprintTags": ["java"],
+                },
             },
         )
         empty = await session.call_tool(
-            "leo_check_host_reachability",
-            {"sessionId": "session-1", "hosts": [], "timeoutMs": 2500},
+            "leo_start_network_probe",
+            {"sessionId": "session-1", "scan": {"targets": []}},
         )
-        invalid_timeout = await session.call_tool(
-            "leo_check_host_reachability",
-            {"sessionId": "session-1", "hosts": ["127.0.0.1"], "timeoutMs": 0},
+        missing_custom_ports = await session.call_tool(
+            "leo_start_network_probe",
+            {
+                "sessionId": "session-1",
+                "scan": {"targets": ["127.0.0.1"], "portProfile": "custom"},
+            },
+        )
+        invalid_stages = await session.call_tool(
+            "leo_start_network_probe",
+            {
+                "sessionId": "session-1",
+                "scan": {"targets": ["127.0.0.1"], "stages": ["SERVICE_PROBE"]},
+            },
+        )
+        fingerprint_without_stage = await session.call_tool(
+            "leo_start_network_probe",
+            {
+                "sessionId": "session-1",
+                "scan": {
+                    "targets": ["127.0.0.1"],
+                    "stages": ["REACHABILITY"],
+                    "fingerprintIds": ["weblogic_any"],
+                },
+            },
         )
     await leoai.aclose()
 
-    assert result.isError is False
-    assert result.structuredContent == {
+    assert previewed.isError is False
+    assert previewed.structuredContent == {
         "untrusted_external_content": True,
-        "hostReachability": {
-            "reachableHosts": ["127.0.0.1"],
-            "unreachableHosts": ["192.0.2.1"],
+        "scanPreview": {"preview": {"warnings": ["large cidr"]}, "errors": []},
+    }
+    assert started.isError is False
+    assert started.structuredContent == {
+        "untrusted_external_content": True,
+        "scanTask": {
+            "scanType": "network-probe",
+            "operation": "started",
+            "result": {"taskId": "probe-task-1", "status": "RUNNING"},
+            "taskId": "probe-task-1",
         },
     }
     assert empty.isError is True
-    assert invalid_timeout.isError is True
+    assert missing_custom_ports.isError is True
+    assert "tool_input_invalid" in missing_custom_ports.content[0].text
+    assert invalid_stages.isError is True
+    assert "tool_input_invalid" in invalid_stages.content[0].text
+    assert fingerprint_without_stage.isError is True
+    assert "tool_input_invalid" in fingerprint_without_stage.content[0].text
     assert requests == [
         (
-            "/puppet-node/host-reachable/scan",
+            "/puppet-node/network-probe/workflow/preview",
             {
                 "sessionId": "session-1",
-                "scanHosts": ["127.0.0.1", "192.0.2.1"],
-                "scanTimeout": 2500,
+                "scan": {
+                    "targets": {
+                        "items": ["10.0.0.0/24", "http://app.internal:8080/health"],
+                        "exclude": ["10.0.0.1"],
+                    },
+                    "portPolicy": {"profile": "custom", "include": [22, 8080]},
+                    "execution": {"workers": 4, "timeoutMs": 1500},
+                    "stages": ["REACHABILITY", "PORT_SCAN"],
+                },
             },
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_operate_starts_a_bounded_port_scan_with_a_fixed_contract():
-    requests: list[tuple[str, dict[str, object]]] = []
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
-        payload = json.loads(request.read())
-        requests.append((request.url.path, payload))
-        return httpx.Response(
-            200,
-            json={"code": 200, "data": {"taskId": "port-task-1", "status": "RUNNING", "apiKey": "hidden"}},
-        )
-
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
-    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
-    app = create_app(settings, leoai)
-    async with _mcp_session(app) as session:
-        result = await session.call_tool(
-            "leo_start_port_scan",
-            {
-                "sessionId": "session-1",
-                "host": "127.0.0.1",
-                "ports": [22, 8080],
-                "timeoutMs": 1500,
-                "threads": 4,
-            },
-        )
-        no_ports = await session.call_tool(
-            "leo_start_port_scan",
-            {
-                "sessionId": "session-1",
-                "host": "127.0.0.1",
-                "ports": [],
-                "timeoutMs": 1500,
-                "threads": 4,
-            },
-        )
-        invalid_port = await session.call_tool(
-            "leo_start_port_scan",
-            {
-                "sessionId": "session-1",
-                "host": "127.0.0.1",
-                "ports": [65536],
-                "timeoutMs": 1500,
-                "threads": 4,
-            },
-        )
-    await leoai.aclose()
-
-    assert result.isError is False
-    assert result.structuredContent == {
-        "untrusted_external_content": True,
-        "scanTask": {
-            "scanType": "port",
-            "operation": "started",
-            "result": {"taskId": "port-task-1", "status": "RUNNING"},
-        },
-    }
-    assert no_ports.isError is True
-    assert invalid_port.isError is True
-    assert requests == [
+        ),
         (
-            "/puppet-node/port-scan/start-scan",
+            "/puppet-node/network-probe/workflow/start",
             {
                 "sessionId": "session-1",
-                "scanHost": "127.0.0.1",
-                "scanPorts": [22, 8080],
-                "scanTimeout": 1500,
-                "threadsNum": 4,
+                "scan": {
+                    "targets": {"items": ["127.0.0.1"]},
+                    "fingerprint": {"tags": ["java"], "ids": ["weblogic_any"]},
+                    "stages": ["REACHABILITY", "PORT_SCAN", "SERVICE_PROBE", "FINGERPRINT"],
+                },
             },
-        )
+        ),
     ]
 
 
 @pytest.mark.asyncio
 async def test_scan_start_fails_closed_when_leoai_omits_the_task_id():
     def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        login = _login_ok(request)
+        if login is not None:
+            return login
         return httpx.Response(200, json={"code": 200, "data": {"status": "RUNNING"}})
 
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
+    settings = _operate_settings()
     leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
     app = create_app(settings, leoai)
     async with _mcp_session(app) as session:
         result = await session.call_tool(
-            "leo_start_port_scan",
-            {"sessionId": "session-1", "host": "127.0.0.1", "ports": [80]},
+            "leo_start_network_probe",
+            {"sessionId": "session-1", "scan": {"targets": ["127.0.0.1"], "ports": [80]}},
         )
     await leoai.aclose()
 
@@ -808,12 +799,13 @@ async def test_scan_start_fails_closed_when_leoai_omits_the_task_id():
 
 
 @pytest.mark.asyncio
-async def test_operate_queries_and_controls_only_an_explicit_port_scan_task():
+async def test_operate_queries_and_controls_an_explicit_network_probe_task():
     requests: list[tuple[str, dict[str, object]]] = []
 
     def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        login = _login_ok(request)
+        if login is not None:
+            return login
         payload = json.loads(request.read())
         requests.append((request.url.path, payload))
         return httpx.Response(
@@ -821,31 +813,58 @@ async def test_operate_queries_and_controls_only_an_explicit_port_scan_task():
             json={"code": 200, "data": {"taskId": payload["taskId"], "status": "RUNNING", "token": "hidden"}},
         )
 
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
+    settings = _operate_settings()
     leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
     app = create_app(settings, leoai)
     async with _mcp_session(app) as session:
         queried = await session.call_tool(
-            "leo_query_port_scan",
-            {"sessionId": "session-1", "taskId": "port-task-1"},
+            "leo_query_network_probe",
+            {"sessionId": "session-1", "taskId": "probe-task-1"},
+        )
+        paged = await session.call_tool(
+            "leo_query_network_probe",
+            {
+                "sessionId": "session-1",
+                "taskId": "probe-task-1",
+                "view": "results",
+                "page": 2,
+                "pageSize": 20,
+            },
+        )
+        fingerprints = await session.call_tool(
+            "leo_query_network_probe",
+            {
+                "sessionId": "session-1",
+                "taskId": "probe-task-1",
+                "view": "fingerprints",
+                "endpointId": "10.0.0.8:8080",
+                "page": 1,
+                "pageSize": 20,
+            },
+        )
+        summary_with_page = await session.call_tool(
+            "leo_query_network_probe",
+            {"sessionId": "session-1", "taskId": "probe-task-1", "page": 2},
+        )
+        results_with_endpoint = await session.call_tool(
+            "leo_query_network_probe",
+            {
+                "sessionId": "session-1",
+                "taskId": "probe-task-1",
+                "view": "results",
+                "endpointId": "10.0.0.8:8080",
+            },
         )
         controlled = [
             await session.call_tool(
-                "leo_control_port_scan",
-                {"sessionId": "session-1", "taskId": "port-task-1", "action": action},
+                "leo_control_network_probe",
+                {"sessionId": "session-1", "taskId": "probe-task-1", "action": action},
             )
-            for action in ("pause", "resume", "stop")
+            for action in ("pause", "resume", "stop", "delete")
         ]
         unsupported = await session.call_tool(
-            "leo_control_port_scan",
-            {"sessionId": "session-1", "taskId": "port-task-1", "action": "delete"},
+            "leo_control_network_probe",
+            {"sessionId": "session-1", "taskId": "probe-task-1", "action": "archive"},
         )
     await leoai.aclose()
 
@@ -853,208 +872,42 @@ async def test_operate_queries_and_controls_only_an_explicit_port_scan_task():
     assert queried.structuredContent == {
         "untrusted_external_content": True,
         "scanTask": {
-            "scanType": "port",
+            "scanType": "network-probe",
             "operation": "queried",
-            "result": {"taskId": "port-task-1", "status": "RUNNING"},
-            "taskId": "port-task-1",
+            "result": {"taskId": "probe-task-1", "status": "RUNNING"},
+            "taskId": "probe-task-1",
         },
     }
+    assert paged.isError is False
+    assert paged.structuredContent["scanTask"]["operation"] == "results"
+    assert fingerprints.isError is False
+    assert fingerprints.structuredContent["scanTask"]["operation"] == "fingerprints"
+    assert summary_with_page.isError is True
+    assert "tool_input_invalid" in summary_with_page.content[0].text
+    assert results_with_endpoint.isError is True
+    assert "tool_input_invalid" in results_with_endpoint.content[0].text
     assert all(result.isError is False for result in controlled)
     assert unsupported.isError is True
     assert requests == [
-        ("/puppet-node/port-scan/query-result", {"sessionId": "session-1", "taskId": "port-task-1"}),
-        ("/puppet-node/port-scan/pause-scan", {"sessionId": "session-1", "taskId": "port-task-1"}),
-        ("/puppet-node/port-scan/resume-scan", {"sessionId": "session-1", "taskId": "port-task-1"}),
-        ("/puppet-node/port-scan/stop-scan", {"sessionId": "session-1", "taskId": "port-task-1"}),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_operate_starts_a_fingerprint_scan_with_structured_targets():
-    requests: list[tuple[str, dict[str, object]]] = []
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
-        payload = json.loads(request.read())
-        requests.append((request.url.path, payload))
-        return httpx.Response(200, json={"code": 200, "data": {"taskId": "fingerprint-task-1"}})
-
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
-    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
-    app = create_app(settings, leoai)
-    async with _mcp_session(app) as session:
-        result = await session.call_tool(
-            "leo_start_fingerprint_scan",
-            {
-                "sessionId": "session-1",
-                "fingerprintId": "fingerprint-1",
-                "targets": [
-                    {"protocol": "http", "baseUrl": "http://127.0.0.1:8080"},
-                    {"protocol": "tcp", "host": "127.0.0.1", "port": 22},
-                ],
-                "threads": 3,
-            },
-        )
-        arbitrary = await session.call_tool(
-            "leo_start_fingerprint_scan",
-            {
-                "sessionId": "session-1",
-                "fingerprintId": "fingerprint-1",
-                "targets": [{"protocol": "file", "path": "/etc/passwd"}],
-                "threads": 3,
-            },
-        )
-        extra = await session.call_tool(
-            "leo_start_fingerprint_scan",
-            {
-                "sessionId": "session-1",
-                "fingerprintId": "fingerprint-1",
-                "targets": [{"protocol": "tcp", "host": "127.0.0.1", "port": 22, "command": "id"}],
-                "threads": 3,
-            },
-        )
-    await leoai.aclose()
-
-    assert result.isError is False
-    assert arbitrary.isError is True
-    assert extra.isError is True
-    assert requests == [
+        ("/puppet-node/network-probe/workflow/query", {"sessionId": "session-1", "taskId": "probe-task-1"}),
         (
-            "/puppet-node/fingerprint/start-scan",
-            {
-                "sessionId": "session-1",
-                "fingerprintId": "fingerprint-1",
-                "targets": [
-                    {"protocol": "http", "baseUrl": "http://127.0.0.1:8080"},
-                    {"protocol": "tcp", "host": "127.0.0.1", "port": 22},
-                ],
-                "threads": 3,
-            },
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_operate_queries_and_controls_a_fingerprint_scan_with_fixed_endpoints():
-    requests: list[str] = []
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
-        requests.append(request.url.path)
-        return httpx.Response(200, json={"code": 200, "data": {"taskId": "fingerprint-task-1"}})
-
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
-    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
-    app = create_app(settings, leoai)
-    async with _mcp_session(app) as session:
-        queried = await session.call_tool(
-            "leo_query_fingerprint_scan",
-            {"sessionId": "session-1", "taskId": "fingerprint-task-1"},
-        )
-        stopped = await session.call_tool(
-            "leo_control_fingerprint_scan",
-            {"sessionId": "session-1", "taskId": "fingerprint-task-1", "action": "stop"},
-        )
-    await leoai.aclose()
-
-    assert queried.isError is False
-    assert stopped.isError is False
-    assert requests == [
-        "/puppet-node/fingerprint/query-result",
-        "/puppet-node/fingerprint/stop-scan",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_operate_recon_scan_has_a_structured_selector_and_fixed_lifecycle():
-    requests: list[tuple[str, dict[str, object]]] = []
-
-    def upstream(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/platform/user/login":
-            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
-        payload = json.loads(request.read())
-        requests.append((request.url.path, payload))
-        return httpx.Response(200, json={"code": 200, "data": {"taskId": "recon-task-1"}})
-
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
-    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
-    app = create_app(settings, leoai)
-    async with _mcp_session(app) as session:
-        started = await session.call_tool(
-            "leo_start_recon_scan",
-            {
-                "sessionId": "session-1",
-                "targets": [{"protocol": "http", "baseUrl": "http://127.0.0.1:8080"}],
-                "ruleSelector": {
-                    "protocol": "http",
-                    "tags": ["java", "web"],
-                    "fingerprintIds": ["weblogic_any"],
-                },
-                "threads": 5,
-            },
-        )
-        queried = await session.call_tool(
-            "leo_query_recon_scan",
-            {"sessionId": "session-1", "taskId": "recon-task-1"},
-        )
-        paused = await session.call_tool(
-            "leo_control_recon_scan",
-            {"sessionId": "session-1", "taskId": "recon-task-1", "action": "pause"},
-        )
-        arbitrary_selector = await session.call_tool(
-            "leo_start_recon_scan",
-            {
-                "sessionId": "session-1",
-                "targets": [{"protocol": "tcp", "host": "127.0.0.1", "port": 22}],
-                "ruleSelector": {"protocol": "tcp", "rule": {"command": "id"}},
-                "threads": 5,
-            },
-        )
-    await leoai.aclose()
-
-    assert started.isError is False
-    assert queried.isError is False
-    assert paused.isError is False
-    assert arbitrary_selector.isError is True
-    assert requests == [
+            "/puppet-node/network-probe/workflow/results/query",
+            {"sessionId": "session-1", "taskId": "probe-task-1", "page": 2, "pageSize": 20},
+        ),
         (
-            "/puppet-node/recon-scan/start-scan",
+            "/puppet-node/network-probe/workflow/fingerprints/query",
             {
                 "sessionId": "session-1",
-                "targets": [{"protocol": "http", "baseUrl": "http://127.0.0.1:8080"}],
-                "ruleSelector": {
-                    "protocol": "http",
-                    "tags": ["java", "web"],
-                    "fingerprintIds": ["weblogic_any"],
-                },
-                "threads": 5,
+                "taskId": "probe-task-1",
+                "page": 1,
+                "pageSize": 20,
+                "endpointId": "10.0.0.8:8080",
             },
         ),
-        ("/puppet-node/recon-scan/query-result", {"sessionId": "session-1", "taskId": "recon-task-1"}),
-        ("/puppet-node/recon-scan/pause-scan", {"sessionId": "session-1", "taskId": "recon-task-1"}),
+        ("/puppet-node/network-probe/workflow/pause", {"sessionId": "session-1", "taskId": "probe-task-1"}),
+        ("/puppet-node/network-probe/workflow/resume", {"sessionId": "session-1", "taskId": "probe-task-1"}),
+        ("/puppet-node/network-probe/workflow/stop", {"sessionId": "session-1", "taskId": "probe-task-1"}),
+        ("/puppet-node/network-probe/workflow/delete", {"sessionId": "session-1", "taskId": "probe-task-1"}),
     ]
 
 
@@ -1068,43 +921,36 @@ async def test_scan_queries_may_reauthenticate_but_scan_actions_are_never_replay
         calls.append(request.url.path)
         if request.url.path == "/platform/user/login":
             return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
-        if request.url.path == "/puppet-node/port-scan/query-result":
+        if request.url.path == "/puppet-node/network-probe/workflow/query":
             query_attempts += 1
             if query_attempts == 2:
-                return httpx.Response(200, json={"code": 200, "data": {"taskId": "port-task-1"}})
+                return httpx.Response(200, json={"code": 200, "data": {"taskId": "probe-task-1"}})
         return httpx.Response(401, json={"code": 401, "msg": "expired"})
 
-    base = _settings()
-    settings = Settings(
-        leoai_base_url=base.leoai_base_url,
-        leoai_username=base.leoai_username,
-        leoai_password=base.leoai_password,
-        mcp_client_token=base.mcp_client_token,
-        mcp_tool_profile="operate",
-    )
+    settings = _operate_settings()
     leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
     app = create_app(settings, leoai)
     async with _mcp_session(app) as session:
         started = await session.call_tool(
-            "leo_start_port_scan",
-            {"sessionId": "session-1", "host": "127.0.0.1", "ports": [80]},
+            "leo_start_network_probe",
+            {"sessionId": "session-1", "scan": {"targets": ["127.0.0.1"], "ports": [80]}},
         )
         queried = await session.call_tool(
-            "leo_query_port_scan",
-            {"sessionId": "session-1", "taskId": "port-task-1"},
+            "leo_query_network_probe",
+            {"sessionId": "session-1", "taskId": "probe-task-1"},
         )
         stopped = await session.call_tool(
-            "leo_control_port_scan",
-            {"sessionId": "session-1", "taskId": "port-task-1", "action": "stop"},
+            "leo_control_network_probe",
+            {"sessionId": "session-1", "taskId": "probe-task-1", "action": "stop"},
         )
     await leoai.aclose()
 
     assert started.isError is True
     assert queried.isError is False
     assert stopped.isError is True
-    assert calls.count("/puppet-node/port-scan/start-scan") == 1
-    assert calls.count("/puppet-node/port-scan/query-result") == 2
-    assert calls.count("/puppet-node/port-scan/stop-scan") == 1
+    assert calls.count("/puppet-node/network-probe/workflow/start") == 1
+    assert calls.count("/puppet-node/network-probe/workflow/query") == 2
+    assert calls.count("/puppet-node/network-probe/workflow/stop") == 1
 
 
 @pytest.mark.asyncio
@@ -2525,6 +2371,31 @@ async def test_get_file_profile_returns_only_filesystem_semantics():
 
 
 @pytest.mark.asyncio
+async def test_get_file_profile_does_not_call_removed_root_listing_on_2x():
+    observed: list[str] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/platform/user/login":
+            return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+        observed.append(request.url.path)
+        return httpx.Response(
+            500,
+            json={"code": 500, "msg": "Request method 'POST' is not supported"},
+        )
+
+    settings = _settings()
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        result = await session.call_tool("leo_get_file_profile", {"sessionId": "session-1"})
+    await leoai.aclose()
+
+    assert result.isError is True
+    assert "leoai_capability_unsupported" in result.content[0].text
+    assert observed == ["/puppet-node/file/profile"]
+
+
+@pytest.mark.asyncio
 async def test_get_file_profile_falls_back_to_old_release_root_listing():
     observed: list[str] = []
 
@@ -2561,7 +2432,13 @@ async def test_get_file_profile_falls_back_to_old_release_root_listing():
             },
         )
 
-    settings = _settings()
+    settings = Settings(
+        leoai_base_url=_settings().leoai_base_url,
+        leoai_username=_settings().leoai_username,
+        leoai_password=_settings().leoai_password,
+        mcp_client_token=_settings().mcp_client_token,
+        leoai_protocol_profile="1x",
+    )
     leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
     app = create_app(settings, leoai)
 
@@ -2791,7 +2668,7 @@ async def test_operate_registers_onboarding_tools_only_when_enabled():
 
     names = {tool.name for tool in tools.tools}
     assert _ONBOARDING_TOOLS.issubset(names)
-    assert len(names) == 74
+    assert len(names) == 68
 
 
 @pytest.mark.asyncio
@@ -2805,7 +2682,7 @@ async def test_privileged_profile_registers_onboarding_tools_without_the_flag():
 
     names = {tool.name for tool in tools.tools}
     assert _ONBOARDING_TOOLS.issubset(names)
-    assert len(names) == 74
+    assert len(names) == 68
 
 
 @pytest.mark.asyncio

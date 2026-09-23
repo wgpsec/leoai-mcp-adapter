@@ -55,16 +55,13 @@ Profile 不暴露命令执行、文件写入或其他操作能力。
 设置 `MCP_TOOL_PROFILE=operate` 后，还会注册以下能力：
 
 - `leo_open_session` / `leo_close_session`
-- `leo_open_terminal` / `leo_write_terminal` / `leo_read_terminal` / `leo_stop_terminal`
+- `leo_open_terminal` / `leo_write_terminal` / `leo_read_terminal` / `leo_stop_terminal`；`init`/`write` 会带上 `includeOutput`
 - `leo_create_file` / `leo_edit_file` / `leo_create_directory`
 - `leo_move_file` / `leo_copy_file` / `leo_delete_file`
 - `leo_list_processes` / `leo_find_processes` / `leo_kill_process`
 - `leo_list_services` / `leo_query_service` / `leo_control_service`
 - `leo_list_network_connections` / `leo_get_network_connection_summary`
-- `leo_check_host_reachability`
-- `leo_start_port_scan` / `leo_query_port_scan` / `leo_control_port_scan`
-- `leo_start_fingerprint_scan` / `leo_query_fingerprint_scan` / `leo_control_fingerprint_scan`
-- `leo_start_recon_scan` / `leo_query_recon_scan` / `leo_control_recon_scan`
+- `leo_preview_network_probe` / `leo_start_network_probe` / `leo_query_network_probe` / `leo_control_network_probe`
 - 使用 LeoAI 已保存连接的数据库方言、能力、元数据和表查询 Tool
 - 结构化数据库连接测试、行插入、更新和删除 Tool，不提供原始 SQL Tool
 - 有边界的上传/下载启动、查询、控制和任务列表 Tool
@@ -88,9 +85,11 @@ JDK 9+ 传 `targetJavaVersion`，Spring Boot 3 / Tomcat 10 传 `servletNamespace
 `leo_add_puppet` 只登记已经可达的 `connLink`，不会替 Agent 投递制品。
 默认 `observe` 和未开开关的 `operate` 都不暴露这组能力。
 
-扫描启动和控制属于 Action，LeoAI 登录过期后不会重放。扫描查询可以重新认证并重试
-一次。指纹和侦察目标只接受结构化 HTTP 或 TCP 格式；指纹与侦察扫描要求 Java
-Puppet 支持组件调用。
+扫描走 LeoAI 统一 network-probe 工作流：先 `preview` 再 `start`，再用 `query`
+拉 summary、分页 results，或 `view=fingerprints` 拉组件识别。可达性已不再是同步
+接口。`start`/`control` 属于 Action，登录过期后不会重放；`preview`/`query` 可以
+重新认证并重试一次。目标接受 IP/CIDR/URL/`host:port`，不要再调用已删除的
+host/port/fingerprint/recon scan Tools。
 
 数据库 Tool 只接受已保存的 `connectionId`，凭据和任意连接字符串不能作为 MCP
 输入。文件上传来源必须是不能包含父级穿越的 LeoAI VFS 相对路径；下载只返回任务
