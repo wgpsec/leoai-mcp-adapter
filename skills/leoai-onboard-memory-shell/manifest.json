@@ -1,0 +1,5 @@
+{
+  "name": "leoai-onboard-memory-shell",
+  "description": "把授权 Java 执行点上线为 LeoAI 纳管 Puppet，并打开可复核 Session",
+  "entry": "SKILL.md"
+}

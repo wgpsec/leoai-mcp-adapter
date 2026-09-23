@@ -1,5 +1,5 @@
 {
   "name": "use-leoai-mcp",
-  "description": "通过 LeoAI MCP 调查已有 Puppet，并执行任务明确授权的受控操作",
+  "description": "通过 LeoAI MCP 调查已有 Puppet，或在上线工具可用时生成制品、放到授权目标并登记 Puppet",
   "entry": "SKILL.md"
 }

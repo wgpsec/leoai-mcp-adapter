@@ -69,7 +69,8 @@ LeoAI 已有 REST API，因此最小方案是在进程边界外做协议适配�
 - 不追求机械覆盖 LeoAI 的每个内部 Controller；
 - 不绕过 LeoAI 权限，不读取 LeoAI SQLite 数据库；
 - 不把 MCP adapter 当作强隔离或 Prompt Injection 防护边界；
-- 不在首版建设多租户数据库、用户同步或独立权限管理系统。
+- 不在首版建设多租户数据库、用户同步或独立权限管理系统；
+- 不把任意命令执行点自动收成 Puppet，也不由 Adapter 投递生成制品。
 
 ## 4. 架构边界
 
@@ -165,6 +166,7 @@ adapter 不提供远程改密、凭据回显或凭据测试接口。启动时登
 | `MCP_MAX_RESPONSE_BYTES` | 否 | `1048576` | 单次 LeoAI 响应上限 |
 | `MCP_TOOL_PROFILE` | 否 | `observe` | `observe`、`operate` 或 `privileged`；只能由部署者配置 |
 | `MCP_ENABLE_FILE_READ` | 否 | `false` | 文件读取能力显式 opt-in |
+| `MCP_ENABLE_ONBOARDING` | 否 | `false` | 生成器与 Puppet 登记能力显式 opt-in；`observe` 不注册 |
 | `MCP_MAX_FILE_BYTES` | 否 | `262144` | 单次文件读取上限，最大不超过 2 MiB |
 | `MCP_MAX_FILE_WRITE_BYTES` | 否 | `262144` | 单次文件创建/编辑内容上限，最大不超过 2 MiB |
 | `MCP_BIND_HOST` | 否 | `127.0.0.1` | Adapter 监听地址 |
@@ -310,6 +312,35 @@ Phase 2.2b 后续批次已按真实上游契约实现：
 打开 terminal，再写入命令、按需读取，并在结束时 stop；一次调用的输入和响应均
 受 adapter 全局上限约束。所有写操作遇到 `401` 只重新建立 adapter 登录状态，
 但不得自动重放原动作，避免重复命令或重复修改。
+
+### 6.4.1 上线登记工具
+
+默认 `operate` 不注册生成器或 Puppet 登记 Tool。只有
+`MCP_ENABLE_ONBOARDING=true` 且当前为 `operate`，或 `MCP_TOOL_PROFILE=privileged`
+时才注册。`observe` 即使打开该开关也不注册。
+
+| MCP Tool | LeoAI API | 语义 |
+|---|---|---|
+| `leo_list_disguises` | `GET /platform/disguise-manager/disguises` | 列出生成/登记所需 disguise，不含编解码实现 |
+| `leo_list_shell_generator_types` | `GET /platform/shell-generator/supported-types` | 列出运行时、传输、注入器和 packer 名称 |
+| `leo_create_project` | `POST /platform/projects` | 创建 LeoAI 项目，不创建 Puppet |
+| `leo_generate_runtime_artifact` | `POST /platform/shell-generator/generate/runtime` | 通过既有生成器生成 runtime 制品 |
+| `leo_generate_webshell` | `POST /platform/shell-generator/generate/webshell` | 通过既有生成器生成 Java WebShell 制品 |
+| `leo_generate_memory_shell` | `POST /platform/shell-generator/generate/memoryshell` | 通过既有生成器生成 memory-shell 制品；`http`/`httpchunk` 必须传 `headerName`/`headerValue`；JDK 9+/Spring Boot 3 还应传 `targetJavaVersion` 与 `servletNamespace` |
+| `leo_add_puppet` | `POST /platform/puppet-manage/puppets` | 登记已经可达的 Puppet URL；HTTP 内存壳应传入生成时相同的 `headerName`/`headerValue` |
+
+约束：
+
+- 只封装 LeoAI 已有 REST，不新增生成器、不构造载荷、不由 Adapter 投递或注入；
+- `permission` 只允许 `private` 或 `team`；
+- 生成结果统一投影为 `artifact.content`，兼容上游 `content`/`shell`/`code`；
+- `classArtifacts` 只返回名称，不返回字节码；
+- 输出不得包含 `connLink`、Cookie、headers 或其他连接机密；
+- `leo_add_puppet` 只接受 `http`/`https`/`ws`/`wss` 的已可达 URL，不探测、不投递、不打开 Session；
+- 创建项目、生成和登记均按 Action 处理，认证过期不得重放；列表查询可以重登后重试一次。
+
+Adapter 不会把通用命令执行点自动收成纳管 Puppet。Agent 必须先让 `connLink`
+可达，再调用 `leo_add_puppet`。
 
 ### 6.5 Privileged 工具
 
@@ -542,6 +573,9 @@ Phase 2.2a 已在 `operate` 中实现进程、服务、网络连接和 Docker �
 已实现扫描、结构化数据库查询与行级变更、有界文件上传/下载任务，以及部署者
 allowlist 内的既有插件调用。allowlist 为空时 `operate` 注册 67 个 Tool，开启可选
 文件读取后为 68 个；非空插件 allowlist 会再注册一个固定插件调用 Tool。
+开启 `MCP_ENABLE_ONBOARDING` 后，`operate` 再注册 7 个生成器与 Puppet 登记 Tool，
+合计 74 个；同时开启文件读取后为 75 个。`privileged` 即使未开该开关也会注册这 7 个
+Tool。默认 `observe` 不包含它们。
 
 以下 `privileged` 能力必须逐项形成独立安全设计，不能因启用 `operate` 自动获得：
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "LeoAI 内存壳上线"
+  short_description: "探测运行时、生成内存壳、投递到授权执行点、登记 Puppet 并打开 Session"
+  default_prompt: "Use $leoai-onboard-memory-shell to place a LeoAI memory shell on the authorized Java execution point, register a Puppet, and open a verifiable Session."

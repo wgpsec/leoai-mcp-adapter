@@ -32,6 +32,7 @@ _TOML_TO_ENV = {
     "mcp_max_response_bytes": "MCP_MAX_RESPONSE_BYTES",
     "mcp_tool_profile": "MCP_TOOL_PROFILE",
     "mcp_enable_file_read": "MCP_ENABLE_FILE_READ",
+    "mcp_enable_onboarding": "MCP_ENABLE_ONBOARDING",
     "mcp_max_file_bytes": "MCP_MAX_FILE_BYTES",
     "mcp_max_file_write_bytes": "MCP_MAX_FILE_WRITE_BYTES",
     "mcp_allowed_plugin_ids": "MCP_ALLOWED_PLUGIN_IDS",
@@ -65,6 +66,7 @@ class Settings:
     mcp_max_response_bytes: int = 1024 * 1024
     mcp_tool_profile: str = "observe"
     mcp_enable_file_read: bool = False
+    mcp_enable_onboarding: bool = False
     mcp_max_file_bytes: int = 256 * 1024
     mcp_max_file_write_bytes: int = 256 * 1024
     mcp_allowed_plugin_ids: tuple[str, ...] = ()
@@ -121,6 +123,7 @@ class Settings:
             mcp_max_response_bytes=_integer(env, "MCP_MAX_RESPONSE_BYTES", 1024 * 1024, 1024, 16 * 1024 * 1024),
             mcp_tool_profile=_choice(env, "MCP_TOOL_PROFILE", "observe", {"observe", "operate", "privileged"}),
             mcp_enable_file_read=_boolean(env, "MCP_ENABLE_FILE_READ", False),
+            mcp_enable_onboarding=_boolean(env, "MCP_ENABLE_ONBOARDING", False),
             mcp_max_file_bytes=_integer(env, "MCP_MAX_FILE_BYTES", 256 * 1024, 1, 2 * 1024 * 1024),
             mcp_max_file_write_bytes=_integer(
                 env,

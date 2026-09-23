@@ -13,6 +13,7 @@ leoai_protocol_profile = "2x"
 
 mcp_tool_profile = "operate"
 mcp_enable_file_read = true
+mcp_enable_onboarding = true
 mcp_bind_host = "0.0.0.0"
 mcp_bind_port = 18080
 # 本地可信网络可关闭 Host 校验；Bearer Token 认证仍然生效。

@@ -36,6 +36,7 @@ def test_settings_loads_operator_supplied_credentials_from_secret_files(tmp_path
     assert settings.leoai_initial_password.get_secret_value() == "54ikun"
     assert settings.mcp_client_token.get_secret_value() == "adapter-token"
     assert settings.mcp_tool_profile == "observe"
+    assert settings.mcp_enable_onboarding is False
     assert settings.mcp_max_file_write_bytes == 256 * 1024
 
 
@@ -139,6 +140,7 @@ def test_settings_loads_bounded_network_and_tool_limits(tmp_path):
             "MCP_MAX_CONCURRENCY": "4",
             "MCP_MAX_RESPONSE_BYTES": "524288",
             "MCP_ENABLE_FILE_READ": "true",
+            "MCP_ENABLE_ONBOARDING": "true",
             "MCP_MAX_FILE_BYTES": "131072",
             "MCP_BIND_HOST": "0.0.0.0",
             "MCP_BIND_PORT": "9010",
@@ -151,6 +153,7 @@ def test_settings_loads_bounded_network_and_tool_limits(tmp_path):
     assert settings.mcp_max_concurrency == 4
     assert settings.mcp_max_response_bytes == 524288
     assert settings.mcp_enable_file_read is True
+    assert settings.mcp_enable_onboarding is True
     assert settings.mcp_max_file_bytes == 131072
     assert settings.mcp_bind_host == "0.0.0.0"
     assert settings.mcp_bind_port == 9010
@@ -191,6 +194,7 @@ adapter_env = "development"
 leoai_protocol_profile = "2x"
 mcp_tool_profile = "operate"
 mcp_enable_file_read = true
+mcp_enable_onboarding = true
 mcp_bind_host = "0.0.0.0"
 mcp_bind_port = 18080
 mcp_allowed_hosts = ["localhost:*", "host.docker.internal:*"]
@@ -210,6 +214,7 @@ mcp_allowed_hosts = ["localhost:*", "host.docker.internal:*"]
     assert settings.leoai_protocol_profile == "2x"
     assert settings.mcp_tool_profile == "operate"
     assert settings.mcp_enable_file_read is True
+    assert settings.mcp_enable_onboarding is True
     assert settings.mcp_bind_host == "0.0.0.0"
     assert settings.mcp_bind_port == 18080
     assert settings.mcp_allowed_hosts == ("localhost:*", "host.docker.internal:*")

@@ -44,6 +44,7 @@ def create_app(settings: Settings, leoai: LeoAIClient):
             allowed_plugin_ids=settings.mcp_allowed_plugin_ids,
         ),
         enable_file_read=settings.mcp_enable_file_read,
+        enable_onboarding=settings.mcp_enable_onboarding,
         tool_profile=settings.mcp_tool_profile,
         allowed_plugin_ids=settings.mcp_allowed_plugin_ids,
     )
@@ -72,6 +73,26 @@ def create_app(settings: Settings, leoai: LeoAIClient):
 
 
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")]
+ProjectName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")]
+ProjectCode = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")]
+PuppetName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")]
+ConnLink = Annotated[
+    str,
+    Field(min_length=8, max_length=2048, pattern=r"^(https?|wss?)://[^\x00-\x20\x7f]+$"),
+]
+GeneratorName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")]
+UrlPattern = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")]
+HeaderName = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9-]*$")]
+HeaderValue = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")]
+TargetJavaVersion = Literal["auto", "6", "7", "8", "9+", "17+"]
+ServletNamespace = Literal["auto", "javax", "jakarta"]
+ProjectPermission = Literal["private", "team"]
+PuppetProtocol = Literal["http", "httpchunk", "websocket"]
+PuppetRuntimeType = Literal["java", "php"]
+WebShellType = Literal["JSP", "JSPX"]
+RuntimeKind = Literal["php"]
+RuntimeArtifactType = Literal["webshell"]
+TransportProtocol = Literal["http", "httpchunk", "websocket"]
 TargetPath = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"^[^\x00-\x1f\x7f]+$")]
 FileOffset = Annotated[int, Field(ge=0)]
 ByteCount = Annotated[int, Field(ge=1, le=2 * 1024 * 1024)]
@@ -274,6 +295,7 @@ def _register_tools(
     tools: LeoAITools,
     *,
     enable_file_read: bool,
+    enable_onboarding: bool,
     tool_profile: str,
     allowed_plugin_ids: tuple[str, ...],
 ) -> None:
@@ -916,6 +938,127 @@ def _register_tools(
         ) -> dict[str, object]:
             """Remove one explicit Docker image reference."""
             return await tools.remove_docker_image(sessionId, imageId, force)
+
+        if enable_onboarding or tool_profile == "privileged":
+
+            @mcp.tool(name="leo_list_disguises", annotations=READ_ONLY)
+            async def list_disguises() -> dict[str, object]:
+                """List LeoAI disguises needed to generate or register a Puppet."""
+                return await tools.list_disguises()
+
+            @mcp.tool(name="leo_list_shell_generator_types", annotations=READ_ONLY)
+            async def list_shell_generator_types() -> dict[str, object]:
+                """List LeoAI generator runtimes, transports, and packer names."""
+                return await tools.list_shell_generator_types()
+
+            @mcp.tool(name="leo_create_project", annotations=ACTION)
+            async def create_project(
+                projectName: ProjectName,
+                projectCode: ProjectCode | None = None,
+                description: BoundedText | None = None,
+                permission: ProjectPermission = "private",
+            ) -> dict[str, object]:
+                """Create one LeoAI project. This does not create a Puppet."""
+                return await tools.create_project(
+                    projectName,
+                    project_code=projectCode,
+                    description=description,
+                    permission=permission,
+                )
+
+            @mcp.tool(name="leo_generate_runtime_artifact", annotations=ACTION)
+            async def generate_runtime_artifact(
+                runtime: RuntimeKind,
+                artifactType: RuntimeArtifactType,
+                reqDisguiseId: Identifier,
+                respDisguiseId: Identifier,
+            ) -> dict[str, object]:
+                """Generate one LeoAI runtime artifact through the existing generator API."""
+                return await tools.generate_runtime_artifact(
+                    runtime,
+                    artifactType,
+                    reqDisguiseId,
+                    respDisguiseId,
+                )
+
+            @mcp.tool(name="leo_generate_webshell", annotations=ACTION)
+            async def generate_webshell(
+                shellType: WebShellType,
+                reqDisguiseId: Identifier,
+                respDisguiseId: Identifier,
+                protocol: TransportProtocol | None = None,
+            ) -> dict[str, object]:
+                """Generate one LeoAI Java WebShell artifact through the existing generator API."""
+                return await tools.generate_webshell(
+                    shellType,
+                    reqDisguiseId,
+                    respDisguiseId,
+                    protocol=protocol,
+                )
+
+            @mcp.tool(name="leo_generate_memory_shell", annotations=ACTION)
+            async def generate_memory_shell(
+                serverType: GeneratorName,
+                shellType: GeneratorName,
+                packerType: GeneratorName,
+                reqDisguiseId: Identifier,
+                respDisguiseId: Identifier,
+                protocol: TransportProtocol | None = None,
+                serverVersion: GeneratorName | None = None,
+                urlPattern: UrlPattern | None = None,
+                headerName: HeaderName | None = None,
+                headerValue: HeaderValue | None = None,
+                targetJavaVersion: TargetJavaVersion | None = None,
+                servletNamespace: ServletNamespace | None = None,
+                byPassJavaModule: bool | None = None,
+            ) -> dict[str, object]:
+                """Generate a memory-shell artifact with header gates and JDK module options."""
+                return await tools.generate_memory_shell(
+                    serverType,
+                    shellType,
+                    packerType,
+                    reqDisguiseId,
+                    respDisguiseId,
+                    protocol=protocol,
+                    server_version=serverVersion,
+                    url_pattern=urlPattern,
+                    header_name=headerName,
+                    header_value=headerValue,
+                    target_java_version=targetJavaVersion,
+                    servlet_namespace=servletNamespace,
+                    bypass_java_module=byPassJavaModule,
+                )
+
+            @mcp.tool(name="leo_add_puppet", annotations=ACTION)
+            async def add_puppet(
+                puppetName: PuppetName,
+                connLink: ConnLink,
+                reqDisguiseId: Identifier,
+                respDisguiseId: Identifier,
+                protocol: PuppetProtocol = "http",
+                type: PuppetRuntimeType = "java",
+                projectId: Identifier | None = None,
+                permission: ProjectPermission = "private",
+                remark: BoundedText | None = None,
+                parentPuppetId: Identifier = "root",
+                headerName: HeaderName | None = None,
+                headerValue: HeaderValue | None = None,
+            ) -> dict[str, object]:
+                """Register an already-reachable LeoAI Puppet URL. HTTP memory shells need the same header gate."""
+                return await tools.add_puppet(
+                    puppetName,
+                    connLink,
+                    reqDisguiseId,
+                    respDisguiseId,
+                    protocol=protocol,
+                    puppet_type=type,
+                    project_id=projectId,
+                    permission=permission,
+                    remark=remark,
+                    parent_puppet_id=parentPuppetId,
+                    header_name=headerName,
+                    header_value=headerValue,
+                )
 
 
 async def _health(_request: Request) -> JSONResponse:

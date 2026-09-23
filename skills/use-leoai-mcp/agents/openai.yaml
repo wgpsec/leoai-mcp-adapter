@@ -1,4 +1,4 @@
 interface:
   display_name: "使用 LeoAI MCP"
-  short_description: "通过 LeoAI Puppet 安全地调查和执行受控操作"
-  default_prompt: "Use $use-leoai-mcp to inspect the selected LeoAI Puppet and complete the requested task."
+  short_description: "调查已有 LeoAI Puppet，或在上线工具可用时生成制品、放到授权目标并登记 Puppet"
+  default_prompt: "Use $use-leoai-mcp to inspect an existing LeoAI Puppet, or generate an artifact, place it on the authorized target, and register a reachable Puppet when those tools are advertised."

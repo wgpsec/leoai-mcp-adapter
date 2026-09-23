@@ -24,6 +24,36 @@ def _settings() -> Settings:
         mcp_client_token=SecretStr("adapter-token"),
     )
 
+_ONBOARDING_TOOLS = {
+    "leo_list_disguises",
+    "leo_list_shell_generator_types",
+    "leo_create_project",
+    "leo_generate_runtime_artifact",
+    "leo_generate_webshell",
+    "leo_generate_memory_shell",
+    "leo_add_puppet",
+}
+
+
+def _login_ok(request: httpx.Request) -> httpx.Response | None:
+    if request.url.path == "/platform/user/login":
+        return httpx.Response(200, json={"code": 200}, headers={"set-cookie": "JSESSIONID=secret; Path=/"})
+    return None
+
+
+def _operate_settings(**overrides) -> Settings:
+    base = _settings()
+    values = {
+        "leoai_base_url": base.leoai_base_url,
+        "leoai_username": base.leoai_username,
+        "leoai_password": base.leoai_password,
+        "mcp_client_token": base.mcp_client_token,
+        "mcp_tool_profile": "operate",
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
 
 @asynccontextmanager
 async def _mcp_connection(app) -> AsyncIterator[ClientSession]:
@@ -259,6 +289,9 @@ async def test_operate_profile_registers_only_the_explicit_action_tools():
     assert "leo_request" not in names
     assert "leo_invoke" not in names
     assert "leo_invoke_allowed_plugin" not in names
+    assert "leo_add_puppet" not in names
+    assert "leo_generate_memory_shell" not in names
+    assert "leo_create_project" not in names
     assert len(names) == 67
 
 
@@ -2731,3 +2764,469 @@ async def test_tool_error_exposes_stable_code_retryability_and_correlation_id():
     assert "leoai_permission_denied" in error_text
     assert "retryable=false" in error_text
     assert "correlation_id=" in error_text
+
+
+@pytest.mark.asyncio
+async def test_observe_does_not_register_onboarding_tools_even_when_enabled():
+    settings = _operate_settings(mcp_tool_profile="observe", mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        tools = await session.list_tools()
+    await leoai.aclose()
+
+    names = {tool.name for tool in tools.tools}
+    assert names.isdisjoint(_ONBOARDING_TOOLS)
+    assert len(names) == 9
+
+
+@pytest.mark.asyncio
+async def test_operate_registers_onboarding_tools_only_when_enabled():
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        tools = await session.list_tools()
+    await leoai.aclose()
+
+    names = {tool.name for tool in tools.tools}
+    assert _ONBOARDING_TOOLS.issubset(names)
+    assert len(names) == 74
+
+
+@pytest.mark.asyncio
+async def test_privileged_profile_registers_onboarding_tools_without_the_flag():
+    settings = _operate_settings(mcp_tool_profile="privileged")
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda _request: httpx.Response(500)))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        tools = await session.list_tools()
+    await leoai.aclose()
+
+    names = {tool.name for tool in tools.tools}
+    assert _ONBOARDING_TOOLS.issubset(names)
+    assert len(names) == 74
+
+
+@pytest.mark.asyncio
+async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
+    requests: list[tuple[str, str, dict[str, str], object]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        login = _login_ok(request)
+        if login is not None:
+            return login
+        body = None if not request.content else request.read().decode()
+        requests.append((request.method, request.url.path, dict(request.url.params), body))
+        if request.url.path == "/platform/projects":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "projectId": "project-1",
+                        "projectName": "range-lab",
+                        "projectCode": "RANGE",
+                        "description": "lab",
+                        "status": "active",
+                        "permission": "private",
+                        "ownerUserId": "internal-user-7",
+                        "teamId": "internal-team-2",
+                    },
+                },
+            )
+        if request.url.path == "/platform/puppet-manage/puppets":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "puppetId": "puppet-1",
+                        "connLink": "http://target.invalid/private",
+                        "headers": "Authorization: Bearer upstream-secret",
+                    },
+                },
+            )
+        return httpx.Response(500)
+
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        created = await session.call_tool(
+            "leo_create_project",
+            {
+                "projectName": "range-lab",
+                "projectCode": "RANGE",
+                "description": "lab",
+                "permission": "private",
+            },
+        )
+        added = await session.call_tool(
+            "leo_add_puppet",
+            {
+                "puppetName": "edge-host",
+                "connLink": "http://target.invalid/app",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "http",
+                "type": "java",
+                "projectId": "project-1",
+                "permission": "team",
+                "remark": "reachable lab host",
+            },
+        )
+        gated = await session.call_tool(
+            "leo_add_puppet",
+            {
+                "puppetName": "gated-host",
+                "connLink": "http://target.invalid/app",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "http",
+                "type": "java",
+                "projectId": "project-1",
+                "headerName": "X-Leo",
+                "headerValue": "gate",
+            },
+        )
+        rejected = await session.call_tool(
+            "leo_add_puppet",
+            {
+                "puppetName": "edge-host",
+                "connLink": "javascript:alert(1)",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+            },
+        )
+    await leoai.aclose()
+
+    assert created.isError is False
+    assert created.structuredContent == {
+        "untrusted_external_content": True,
+        "project": {
+            "projectId": "project-1",
+            "projectName": "range-lab",
+            "projectCode": "RANGE",
+            "description": "lab",
+            "status": "active",
+            "permission": "private",
+        },
+    }
+    assert added.isError is False
+    assert added.structuredContent == {
+        "operation": "puppet_added",
+        "puppetId": "puppet-1",
+        "puppetName": "edge-host",
+        "protocol": "http",
+        "type": "java",
+        "projectId": "project-1",
+    }
+    assert "connLink" not in added.structuredContent
+    assert gated.isError is False
+    assert "headers" not in gated.structuredContent
+    assert rejected.isError is True
+    assert requests == [
+        (
+            "POST",
+            "/platform/projects",
+            {},
+            '{"projectName":"range-lab","permission":"private","projectCode":"RANGE","description":"lab"}',
+        ),
+        (
+            "POST",
+            "/platform/puppet-manage/puppets",
+            {"projectId": "project-1"},
+            (
+                '{"puppetName":"edge-host","connLink":"http://target.invalid/app","protocol":"http",'
+                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","permission":"team",'
+                '"parentPuppetId":"root","remark":"reachable lab host"}'
+            ),
+        ),
+        (
+            "POST",
+            "/platform/puppet-manage/puppets",
+            {"projectId": "project-1"},
+            (
+                '{"puppetName":"gated-host","connLink":"http://target.invalid/app","protocol":"http",'
+                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","permission":"private",'
+                '"parentPuppetId":"root","headers":"{\\"X-Leo\\":\\"gate\\"}"}'
+            ),
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_http_memory_shell_requires_header_gate():
+    requests: list[tuple[str, object]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        login = _login_ok(request)
+        if login is not None:
+            return login
+        body = None if not request.content else request.read().decode()
+        requests.append((request.url.path, body))
+        if request.url.path == "/platform/shell-generator/generate/memoryshell":
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"code": "class Injector {}", "protocol": "websocket"}},
+            )
+        return httpx.Response(500)
+
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        missing = await session.call_tool(
+            "leo_generate_memory_shell",
+            {
+                "serverType": "Tomcat",
+                "shellType": "Listener",
+                "packerType": "JSP",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "http",
+            },
+        )
+        websocket = await session.call_tool(
+            "leo_generate_memory_shell",
+            {
+                "serverType": "Tomcat",
+                "shellType": "WebSocketInjector",
+                "packerType": "DefaultBase64",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "websocket",
+                "urlPattern": "/leo",
+            },
+        )
+    await leoai.aclose()
+
+    assert missing.isError is True
+    assert "tool_input_invalid" in missing.content[0].text
+    assert websocket.isError is False
+    assert requests == [
+        (
+            "/platform/shell-generator/generate/memoryshell",
+            '{"serverType":"Tomcat","shellType":"WebSocketInjector","packerType":"DefaultBase64","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"websocket","urlPattern":"/leo"}',
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts():
+    requests: list[tuple[str, str, object]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        login = _login_ok(request)
+        if login is not None:
+            return login
+        body = None if not request.content else request.read().decode()
+        requests.append((request.method, request.url.path, body))
+        if request.url.path == "/platform/disguise-manager/disguises":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": [
+                        {
+                            "disguiseId": "req-1",
+                            "disguiseName": "plain",
+                            "version": "1",
+                            "description": "lab disguise",
+                            "remark": "ok",
+                            "encodeBody": "secret-encode",
+                            "decodeBody": "secret-decode",
+                            "headers": {"Authorization": "Bearer leaked"},
+                        }
+                    ],
+                },
+            )
+        if request.url.path == "/platform/shell-generator/supported-types":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "transportProtocols": {"webshell": ["http"], "memoryshell": ["http", "websocket"]},
+                        "runtimeGenerators": {"php": {"artifactTypes": ["webshell"]}},
+                        "targetJavaVersions": ["JAVA_8"],
+                        "servletNamespaces": ["JAVAX"],
+                        "serverInjectorTypes": {"Tomcat": ["Listener", "Filter"]},
+                        "serverProtocolInjectorTypes": {"http": {"Tomcat": ["Listener"]}},
+                        "packerTypes": {
+                            "groups": [{"groupName": "jsp", "packers": ["JSP", "JSPX"]}],
+                            "ungrouped": ["BASE64"],
+                        },
+                    },
+                },
+            )
+        if request.url.path == "/platform/shell-generator/generate/runtime":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "content": "<?php echo 1;",
+                        "fileExtension": "php",
+                        "mediaType": "text/x-php",
+                        "warnings": [],
+                        "metadata": {"runtime": "php", "connLink": "must-not-leak"},
+                    },
+                },
+            )
+        if request.url.path == "/platform/shell-generator/generate/webshell":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "shell": "<% out.print(1); %>",
+                        "protocol": "http",
+                        "classArtifacts": {"Core": "AAAA"},
+                    },
+                },
+            )
+        if request.url.path == "/platform/shell-generator/generate/memoryshell":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 200,
+                    "data": {
+                        "code": "class Injector {}",
+                        "serverType": "Tomcat",
+                        "shellType": "Listener",
+                        "urlPattern": "/lab",
+                        "headerName": "X-Leo",
+                        "headerValue": "gate",
+                        "headerConfig": "X-Leo : gate",
+                        "classArtifacts": {"Injector": "BBBB"},
+                    },
+                },
+            )
+        return httpx.Response(500)
+
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        disguises = await session.call_tool("leo_list_disguises")
+        catalog = await session.call_tool("leo_list_shell_generator_types")
+        runtime = await session.call_tool(
+            "leo_generate_runtime_artifact",
+            {
+                "runtime": "php",
+                "artifactType": "webshell",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+            },
+        )
+        webshell = await session.call_tool(
+            "leo_generate_webshell",
+            {
+                "shellType": "JSP",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "http",
+            },
+        )
+        memoryshell = await session.call_tool(
+            "leo_generate_memory_shell",
+            {
+                "serverType": "Tomcat",
+                "shellType": "Listener",
+                "packerType": "JSP",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "http",
+                "urlPattern": "/lab",
+                "headerName": "X-Leo",
+                "headerValue": "gate",
+                "targetJavaVersion": "17+",
+                "servletNamespace": "jakarta",
+                "byPassJavaModule": True,
+            },
+        )
+    await leoai.aclose()
+
+    assert disguises.structuredContent == {
+        "untrusted_external_content": True,
+        "disguises": [
+            {
+                "disguiseId": "req-1",
+                "disguiseName": "plain",
+                "version": "1",
+                "description": "lab disguise",
+                "remark": "ok",
+            }
+        ],
+    }
+    assert catalog.structuredContent == {
+        "untrusted_external_content": True,
+        "generator": {
+            "transportProtocols": {"webshell": ["http"], "memoryshell": ["http", "websocket"]},
+            "runtimeGenerators": {"php": {"artifactTypes": ["webshell"]}},
+            "targetJavaVersions": ["JAVA_8"],
+            "servletNamespaces": ["JAVAX"],
+            "serverInjectorTypes": {"Tomcat": ["Listener", "Filter"]},
+            "serverProtocolInjectorTypes": {"http": {"Tomcat": ["Listener"]}},
+            "serverTypes": ["Tomcat"],
+            "packerTypes": ["JSP", "JSPX", "BASE64"],
+        },
+    }
+    assert runtime.structuredContent == {
+        "untrusted_external_content": True,
+        "artifact": {
+            "kind": "runtime",
+            "content": "<?php echo 1;",
+            "fileExtension": "php",
+            "mediaType": "text/x-php",
+            "warnings": [],
+            "metadata": {"runtime": "php"},
+        },
+    }
+    assert webshell.structuredContent == {
+        "untrusted_external_content": True,
+        "artifact": {
+            "kind": "webshell",
+            "content": "<% out.print(1); %>",
+            "metadata": {"protocol": "http"},
+            "classArtifactNames": ["Core"],
+        },
+    }
+    assert memoryshell.structuredContent == {
+        "untrusted_external_content": True,
+        "artifact": {
+            "kind": "memoryshell",
+            "content": "class Injector {}",
+            "metadata": {
+                "serverType": "Tomcat",
+                "shellType": "Listener",
+                "urlPattern": "/lab",
+            },
+            "classArtifactNames": ["Injector"],
+        },
+    }
+    metadata = memoryshell.structuredContent["artifact"]["metadata"]
+    assert "headerName" not in metadata
+    assert "headerValue" not in metadata
+    assert "headerConfig" not in metadata
+    assert requests == [
+        ("GET", "/platform/disguise-manager/disguises", None),
+        ("GET", "/platform/shell-generator/supported-types", None),
+        (
+            "POST",
+            "/platform/shell-generator/generate/runtime",
+            '{"runtime":"php","artifactType":"webshell","reqDisguiseId":"req-1","respDisguiseId":"resp-1"}',
+        ),
+        (
+            "POST",
+            "/platform/shell-generator/generate/webshell",
+            '{"shellType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"http"}',
+        ),
+        (
+            "POST",
+            "/platform/shell-generator/generate/memoryshell",
+            '{"serverType":"Tomcat","shellType":"Listener","packerType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"http","urlPattern":"/lab","headerName":"X-Leo","headerValue":"gate","targetJavaVersion":"17+","servletNamespace":"jakarta","byPassJavaModule":true}',
+        ),
+    ]

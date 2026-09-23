@@ -74,6 +74,20 @@ Profile 不暴露命令执行、文件写入或其他操作能力。
 `leo_invoke_allowed_plugin`。调用的 ID 必须位于部署侧允许列表中，并且对应 LeoAI
 中已经安装的插件。Adapter 不会创建、上传或动态加载插件。
 
+设置 `MCP_ENABLE_ONBOARDING=true` 且当前为 `operate`，或直接使用 `privileged`
+Profile 时，还会注册上线登记 Tool：
+
+- `leo_list_disguises` / `leo_list_shell_generator_types`
+- `leo_create_project`
+- `leo_generate_runtime_artifact` / `leo_generate_webshell` / `leo_generate_memory_shell`
+- `leo_add_puppet`
+
+这些 Tool 只封装 LeoAI 已有生成器和 Puppet 登记接口。生成结果返回制品内容，不返回
+连接机密。`http`/`httpchunk` 内存壳必须传 `headerName`/`headerValue`；
+JDK 9+ 传 `targetJavaVersion`，Spring Boot 3 / Tomcat 10 传 `servletNamespace=jakarta`。
+`leo_add_puppet` 只登记已经可达的 `connLink`，不会替 Agent 投递制品。
+默认 `observe` 和未开开关的 `operate` 都不暴露这组能力。
+
 扫描启动和控制属于 Action，LeoAI 登录过期后不会重放。扫描查询可以重新认证并重试
 一次。指纹和侦察目标只接受结构化 HTTP 或 TCP 格式；指纹与侦察扫描要求 Java
 Puppet 支持组件调用。
@@ -131,6 +145,7 @@ mcp_dns_rebinding_protection = false
 | `MCP_MAX_RESPONSE_BYTES` | `1048576` | LeoAI 响应体最大字节数 |
 | `MCP_TOOL_PROFILE` | `observe` | 部署侧 Profile，可选 `observe`、`operate` 或 `privileged` |
 | `MCP_ENABLE_FILE_READ` | `false` | 是否注册可选的文件读取 Tool |
+| `MCP_ENABLE_ONBOARDING` | `false` | 是否在 `operate` 中注册生成器与 Puppet 登记 Tool |
 | `MCP_MAX_FILE_BYTES` | `262144` | 单次可选文件读取的最大字节数 |
 | `MCP_MAX_FILE_WRITE_BYTES` | `262144` | 单次创建/编辑文件允许的最大 UTF-8 字节数 |
 | `MCP_ALLOWED_PLUGIN_IDS` | 空 | 允许调用的已安装插件 ID，使用英文逗号分隔 |
@@ -177,11 +192,14 @@ PoJun MCP 注册示例：
 }
 ```
 
-仓库同时提供轻量项目技能
-[`use-leoai-mcp`](skills/use-leoai-mcp/SKILL.md)，用于约束 Puppet/Session 选择、
-先观察后操作、Action 后独立验证、终端输出解码和资源清理。PoJun 新建 Project 时可
-直接上传该 `SKILL.md`，阶段范围建议选择 `bootstrap + explore`。Skill 不包含凭据、
-服务地址或 Tool 实现，仍需为 Project 单独启用上述 LeoAI HTTP MCP。
+仓库同时提供两份轻量项目技能：
+
+- [`use-leoai-mcp`](skills/use-leoai-mcp/SKILL.md)：调查已有 Puppet / Session。Context1337 私仓 ID：`absec://team/skill/use-leoai-mcp`
+- [`leoai-onboard-memory-shell`](skills/leoai-onboard-memory-shell/SKILL.md)：把授权 Java 执行点上线为可打开 Session 的 Puppet。Context1337 私仓 ID：`absec://team/skill/leoai-onboard-memory-shell`
+
+PoJun 新建「LeoAI 上线专用」Project 时上传 onboarding skill，阶段范围建议
+`bootstrap + explore`。Skill 不包含凭据、服务地址或 Tool 实现，仍需为 Project
+单独启用上述 LeoAI HTTP MCP。
 
 构建可选容器镜像：
 
