@@ -70,4 +70,4 @@ MCP 只生成制品并登记已可达 `connLink`，不负责投递。生成器�
 - `headers` 由 MCP 从 `headerName`/`headerValue` 组装，不要自己造 Cookie。
 - `leo_open_session` 失败原文若是「无主机回复」，回到投递/验证，不要换 disguise 硬登记。
 - 成功后再 `leo_list_sessions` 确认 session 仍在，并用 `leo_get_basic_info` 读到真实主机信息。
-- 最终只报告真实 `projectId` / `puppetId` / `sessionId`。不要写凭据、MCP token、Leo 密码。
+- 上线成功后写过程文档：运行时判断、生成参数、header 验证、投递路径，以及真实 `projectId` / `puppetId` / `sessionId`。未拿到这些 id 时不要用文档充数。不要写凭据、MCP token、Leo 密码。
