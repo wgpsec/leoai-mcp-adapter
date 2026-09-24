@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import json
+import secrets
 from typing import Any
 
 from .client import LeoAIClient
@@ -394,7 +395,10 @@ class LeoAITools:
         artifact_type: str,
         req_disguise_id: str,
         resp_disguise_id: str,
+        *,
+        payload_key: str | None = None,
     ) -> dict[str, object]:
+        payload_key = _resolve_payload_key(payload_key)
         data = await self._action_request(
             "POST",
             "/platform/shell-generator/generate/runtime",
@@ -403,9 +407,10 @@ class LeoAITools:
                 "artifactType": artifact_type,
                 "reqDisguiseId": req_disguise_id,
                 "respDisguiseId": resp_disguise_id,
+                "payloadKey": payload_key,
             },
         )
-        return _generated_artifact("runtime", data)
+        return _generated_artifact("runtime", data, payload_key=payload_key)
 
     async def generate_webshell(
         self,
@@ -414,11 +419,14 @@ class LeoAITools:
         resp_disguise_id: str,
         *,
         protocol: str | None = None,
+        payload_key: str | None = None,
     ) -> dict[str, object]:
+        payload_key = _resolve_payload_key(payload_key)
         payload: dict[str, object] = {
             "shellType": shell_type,
             "reqDisguiseId": req_disguise_id,
             "respDisguiseId": resp_disguise_id,
+            "payloadKey": payload_key,
         }
         if protocol is not None:
             payload["protocol"] = protocol
@@ -427,7 +435,7 @@ class LeoAITools:
             "/platform/shell-generator/generate/webshell",
             json=payload,
         )
-        return _generated_artifact("webshell", data)
+        return _generated_artifact("webshell", data, payload_key=payload_key)
 
     async def generate_memory_shell(
         self,
@@ -445,6 +453,7 @@ class LeoAITools:
         target_java_version: str | None = None,
         servlet_namespace: str | None = None,
         bypass_java_module: bool | None = None,
+        payload_key: str | None = None,
     ) -> dict[str, object]:
         protocol_value = protocol or "http"
         if protocol_value in {"http", "httpchunk"} and (not header_name or not header_value):
@@ -452,12 +461,14 @@ class LeoAITools:
                 "tool_input_invalid",
                 "http/httpchunk memory shells require headerName and headerValue",
             )
+        payload_key = _resolve_payload_key(payload_key)
         payload: dict[str, object] = {
             "serverType": server_type,
             "shellType": shell_type,
             "packerType": packer_type,
             "reqDisguiseId": req_disguise_id,
             "respDisguiseId": resp_disguise_id,
+            "payloadKey": payload_key,
         }
         if protocol is not None:
             payload["protocol"] = protocol
@@ -480,7 +491,7 @@ class LeoAITools:
             "/platform/shell-generator/generate/memoryshell",
             json=payload,
         )
-        return _generated_artifact("memoryshell", data)
+        return _generated_artifact("memoryshell", data, payload_key=payload_key)
 
     async def add_puppet(
         self,
@@ -491,6 +502,7 @@ class LeoAITools:
         *,
         protocol: str,
         puppet_type: str,
+        payload_key: str,
         project_id: str | None = None,
         permission: str = "private",
         remark: str | None = None,
@@ -510,6 +522,7 @@ class LeoAITools:
             "type": puppet_type,
             "reqDisguiseId": req_disguise_id,
             "respDisguiseId": resp_disguise_id,
+            "payloadKey": payload_key,
             "permission": permission,
             "parentPuppetId": parent_puppet_id,
         }
@@ -1376,7 +1389,7 @@ def _disguise_summary(value: Any) -> dict[str, object]:
     return _pick(value, "disguiseId", "disguiseName", "version", "description", "remark")
 
 
-def _generated_artifact(kind: str, value: Any) -> dict[str, object]:
+def _generated_artifact(kind: str, value: Any, *, payload_key: str | None = None) -> dict[str, object]:
     if not isinstance(value, dict):
         raise LeoAIError("leoai_protocol_error", "LeoAI returned an invalid generated artifact")
     content = _artifact_content(value)
@@ -1394,12 +1407,30 @@ def _generated_artifact(kind: str, value: Any) -> dict[str, object]:
             for key, item in value.items()
             if key not in _ARTIFACT_RESERVED_KEYS
         }
-    if metadata:
-        artifact["metadata"] = _sanitize_external(metadata)
+    sanitized = _sanitize_external(metadata) if metadata else {}
+    if isinstance(sanitized, dict):
+        sanitized.pop("payloadKey", None)
+        sanitized.pop("payload_key", None)
+        if sanitized:
+            artifact["metadata"] = sanitized
     class_artifacts = value.get("classArtifacts")
     if isinstance(class_artifacts, dict):
         artifact["classArtifactNames"] = [str(name) for name in class_artifacts]
+    if payload_key:
+        artifact["payloadKey"] = payload_key
     return {"untrusted_external_content": True, "artifact": artifact}
+
+
+_PAYLOAD_KEY_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+_PAYLOAD_KEY_LENGTH = 8
+
+
+def _resolve_payload_key(payload_key: str | None) -> str:
+    if payload_key is not None:
+        value = payload_key.strip()
+        if value:
+            return value
+    return "".join(secrets.choice(_PAYLOAD_KEY_ALPHABET) for _ in range(_PAYLOAD_KEY_LENGTH))
 
 
 _ARTIFACT_CONTENT_KEYS = ("content", "shell", "code")

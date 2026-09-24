@@ -84,6 +84,7 @@ GeneratorName = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A
 UrlPattern = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")]
 HeaderName = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9-]*$")]
 HeaderValue = Annotated[str, Field(min_length=1, max_length=256, pattern=r"^[^\x00-\x1f\x7f]+$")]
+PayloadKey = Annotated[str, Field(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9._:-]+$")]
 TargetJavaVersion = Literal["auto", "6", "7", "8", "9+", "17+"]
 ServletNamespace = Literal["auto", "javax", "jakarta"]
 ProjectPermission = Literal["private", "team"]
@@ -944,6 +945,7 @@ def _register_tools(
                 artifactType: RuntimeArtifactType,
                 reqDisguiseId: Identifier,
                 respDisguiseId: Identifier,
+                payloadKey: PayloadKey | None = None,
             ) -> dict[str, object]:
                 """Generate one LeoAI runtime artifact through the existing generator API."""
                 return await tools.generate_runtime_artifact(
@@ -951,6 +953,7 @@ def _register_tools(
                     artifactType,
                     reqDisguiseId,
                     respDisguiseId,
+                    payload_key=payloadKey,
                 )
 
             @mcp.tool(name="leo_generate_webshell", annotations=ACTION)
@@ -959,6 +962,7 @@ def _register_tools(
                 reqDisguiseId: Identifier,
                 respDisguiseId: Identifier,
                 protocol: TransportProtocol | None = None,
+                payloadKey: PayloadKey | None = None,
             ) -> dict[str, object]:
                 """Generate one LeoAI Java WebShell artifact through the existing generator API."""
                 return await tools.generate_webshell(
@@ -966,6 +970,7 @@ def _register_tools(
                     reqDisguiseId,
                     respDisguiseId,
                     protocol=protocol,
+                    payload_key=payloadKey,
                 )
 
             @mcp.tool(name="leo_generate_memory_shell", annotations=ACTION)
@@ -983,6 +988,7 @@ def _register_tools(
                 targetJavaVersion: TargetJavaVersion | None = None,
                 servletNamespace: ServletNamespace | None = None,
                 byPassJavaModule: bool | None = None,
+                payloadKey: PayloadKey | None = None,
             ) -> dict[str, object]:
                 """Generate a memory-shell artifact with header gates and JDK module options."""
                 return await tools.generate_memory_shell(
@@ -999,6 +1005,7 @@ def _register_tools(
                     target_java_version=targetJavaVersion,
                     servlet_namespace=servletNamespace,
                     bypass_java_module=byPassJavaModule,
+                    payload_key=payloadKey,
                 )
 
             @mcp.tool(name="leo_add_puppet", annotations=ACTION)
@@ -1007,6 +1014,7 @@ def _register_tools(
                 connLink: ConnLink,
                 reqDisguiseId: Identifier,
                 respDisguiseId: Identifier,
+                payloadKey: PayloadKey,
                 protocol: PuppetProtocol = "http",
                 type: PuppetRuntimeType = "java",
                 projectId: Identifier | None = None,
@@ -1024,6 +1032,7 @@ def _register_tools(
                     respDisguiseId,
                     protocol=protocol,
                     puppet_type=type,
+                    payload_key=payloadKey,
                     project_id=projectId,
                     permission=permission,
                     remark=remark,

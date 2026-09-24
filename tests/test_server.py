@@ -2746,6 +2746,7 @@ async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
                 "connLink": "http://target.invalid/app",
                 "reqDisguiseId": "req-1",
                 "respDisguiseId": "resp-1",
+                "payloadKey": "lab-key-1",
                 "protocol": "http",
                 "type": "java",
                 "projectId": "project-1",
@@ -2760,6 +2761,7 @@ async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
                 "connLink": "http://target.invalid/app",
                 "reqDisguiseId": "req-1",
                 "respDisguiseId": "resp-1",
+                "payloadKey": "lab-key-1",
                 "protocol": "http",
                 "type": "java",
                 "projectId": "project-1",
@@ -2774,6 +2776,7 @@ async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
                 "connLink": "javascript:alert(1)",
                 "reqDisguiseId": "req-1",
                 "respDisguiseId": "resp-1",
+                "payloadKey": "lab-key-1",
             },
         )
     await leoai.aclose()
@@ -2816,8 +2819,8 @@ async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
             {"projectId": "project-1"},
             (
                 '{"puppetName":"edge-host","connLink":"http://target.invalid/app","protocol":"http",'
-                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","permission":"team",'
-                '"parentPuppetId":"root","remark":"reachable lab host"}'
+                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1",'
+                '"permission":"team","parentPuppetId":"root","remark":"reachable lab host"}'
             ),
         ),
         (
@@ -2826,7 +2829,7 @@ async def test_onboarding_create_project_and_add_puppet_use_fixed_endpoints():
             {"projectId": "project-1"},
             (
                 '{"puppetName":"gated-host","connLink":"http://target.invalid/app","protocol":"http",'
-                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","permission":"private",'
+                '"type":"java","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1","permission":"private",'
                 '"parentPuppetId":"root","headers":"{\\"X-Leo\\":\\"gate\\"}"}'
             ),
         ),
@@ -2875,6 +2878,7 @@ async def test_http_memory_shell_requires_header_gate():
                 "respDisguiseId": "resp-1",
                 "protocol": "websocket",
                 "urlPattern": "/leo",
+                "payloadKey": "lab-key-1",
             },
         )
     await leoai.aclose()
@@ -2885,9 +2889,68 @@ async def test_http_memory_shell_requires_header_gate():
     assert requests == [
         (
             "/platform/shell-generator/generate/memoryshell",
-            '{"serverType":"Tomcat","shellType":"WebSocketInjector","packerType":"DefaultBase64","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"websocket","urlPattern":"/leo"}',
+            '{"serverType":"Tomcat","shellType":"WebSocketInjector","packerType":"DefaultBase64","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1","protocol":"websocket","urlPattern":"/leo"}',
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_generate_memory_shell_autogenerates_payload_key_when_omitted():
+    requests: list[dict[str, object]] = []
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        login = _login_ok(request)
+        if login is not None:
+            return login
+        if request.url.path == "/platform/shell-generator/generate/memoryshell":
+            requests.append(request.read().decode())
+            return httpx.Response(
+                200,
+                json={"code": 200, "data": {"code": "class Injector {}", "protocol": "websocket"}},
+            )
+        return httpx.Response(500)
+
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(upstream))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        generated = await session.call_tool(
+            "leo_generate_memory_shell",
+            {
+                "serverType": "Tomcat",
+                "shellType": "WebSocketInjector",
+                "packerType": "DefaultBase64",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+                "protocol": "websocket",
+            },
+        )
+    await leoai.aclose()
+
+    assert generated.isError is False
+    payload_key = generated.structuredContent["artifact"]["payloadKey"]
+    assert isinstance(payload_key, str) and len(payload_key) == 8
+    assert all(character in "0123456789abcdefghijklmnopqrstuvwxyz" for character in payload_key)
+    assert f'"payloadKey":"{payload_key}"' in requests[0]
+
+
+@pytest.mark.asyncio
+async def test_add_puppet_requires_payload_key():
+    settings = _operate_settings(mcp_enable_onboarding=True)
+    leoai = LeoAIClient(settings, transport=httpx.MockTransport(lambda request: _login_ok(request) or httpx.Response(500)))
+    app = create_app(settings, leoai)
+    async with _mcp_session(app) as session:
+        missing = await session.call_tool(
+            "leo_add_puppet",
+            {
+                "puppetName": "edge-host",
+                "connLink": "http://target.invalid/app",
+                "reqDisguiseId": "req-1",
+                "respDisguiseId": "resp-1",
+            },
+        )
+    await leoai.aclose()
+    assert missing.isError is True
 
 
 @pytest.mark.asyncio
@@ -2996,6 +3059,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
                 "artifactType": "webshell",
                 "reqDisguiseId": "req-1",
                 "respDisguiseId": "resp-1",
+                "payloadKey": "lab-key-1",
             },
         )
         webshell = await session.call_tool(
@@ -3005,6 +3069,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
                 "reqDisguiseId": "req-1",
                 "respDisguiseId": "resp-1",
                 "protocol": "http",
+                "payloadKey": "lab-key-1",
             },
         )
         memoryshell = await session.call_tool(
@@ -3022,6 +3087,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
                 "targetJavaVersion": "17+",
                 "servletNamespace": "jakarta",
                 "byPassJavaModule": True,
+                "payloadKey": "lab-key-1",
             },
         )
     await leoai.aclose()
@@ -3060,6 +3126,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
             "mediaType": "text/x-php",
             "warnings": [],
             "metadata": {"runtime": "php"},
+            "payloadKey": "lab-key-1",
         },
     }
     assert webshell.structuredContent == {
@@ -3069,6 +3136,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
             "content": "<% out.print(1); %>",
             "metadata": {"protocol": "http"},
             "classArtifactNames": ["Core"],
+            "payloadKey": "lab-key-1",
         },
     }
     assert memoryshell.structuredContent == {
@@ -3082,6 +3150,7 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
                 "urlPattern": "/lab",
             },
             "classArtifactNames": ["Injector"],
+            "payloadKey": "lab-key-1",
         },
     }
     metadata = memoryshell.structuredContent["artifact"]["metadata"]
@@ -3094,16 +3163,16 @@ async def test_onboarding_generator_tools_project_catalog_and_artifact_contracts
         (
             "POST",
             "/platform/shell-generator/generate/runtime",
-            '{"runtime":"php","artifactType":"webshell","reqDisguiseId":"req-1","respDisguiseId":"resp-1"}',
+            '{"runtime":"php","artifactType":"webshell","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1"}',
         ),
         (
             "POST",
             "/platform/shell-generator/generate/webshell",
-            '{"shellType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"http"}',
+            '{"shellType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1","protocol":"http"}',
         ),
         (
             "POST",
             "/platform/shell-generator/generate/memoryshell",
-            '{"serverType":"Tomcat","shellType":"Listener","packerType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","protocol":"http","urlPattern":"/lab","headerName":"X-Leo","headerValue":"gate","targetJavaVersion":"17+","servletNamespace":"jakarta","byPassJavaModule":true}',
+            '{"serverType":"Tomcat","shellType":"Listener","packerType":"JSP","reqDisguiseId":"req-1","respDisguiseId":"resp-1","payloadKey":"lab-key-1","protocol":"http","urlPattern":"/lab","headerName":"X-Leo","headerValue":"gate","targetJavaVersion":"17+","servletNamespace":"jakarta","byPassJavaModule":true}',
         ),
     ]

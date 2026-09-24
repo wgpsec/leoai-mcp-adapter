@@ -82,6 +82,8 @@ Profile 时，还会注册上线登记 Tool：
 这些 Tool 只封装 LeoAI 已有生成器和 Puppet 登记接口。生成结果返回制品内容，不返回
 连接机密。`http`/`httpchunk` 内存壳必须传 `headerName`/`headerValue`；
 JDK 9+ 传 `targetJavaVersion`，Spring Boot 3 / Tomcat 10 传 `servletNamespace=jakarta`。
+LeoAI 2.2.0 生成器和 `leo_add_puppet` 都需要同一把 `payloadKey`。生成时可不传，Adapter
+会生成并在 `artifact.payloadKey` 返回；登记时必须原样带回。
 `leo_add_puppet` 只登记已经可达的 `connLink`，不会替 Agent 投递制品。
 默认 `observe` 和未开开关的 `operate` 都不暴露这组能力。
 

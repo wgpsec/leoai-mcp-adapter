@@ -319,10 +319,10 @@ adapter 登录状态，但不得自动重放原动作，避免重复命令或重
 | `leo_list_disguises` | `GET /platform/disguise-manager/disguises` | 列出生成/登记所需 disguise，不含编解码实现 |
 | `leo_list_shell_generator_types` | `GET /platform/shell-generator/supported-types` | 列出运行时、传输、注入器和 packer 名称 |
 | `leo_create_project` | `POST /platform/projects` | 创建 LeoAI 项目，不创建 Puppet |
-| `leo_generate_runtime_artifact` | `POST /platform/shell-generator/generate/runtime` | 通过既有生成器生成 runtime 制品 |
-| `leo_generate_webshell` | `POST /platform/shell-generator/generate/webshell` | 通过既有生成器生成 Java WebShell 制品 |
-| `leo_generate_memory_shell` | `POST /platform/shell-generator/generate/memoryshell` | 通过既有生成器生成 memory-shell 制品；`http`/`httpchunk` 必须传 `headerName`/`headerValue`；JDK 9+/Spring Boot 3 还应传 `targetJavaVersion` 与 `servletNamespace` |
-| `leo_add_puppet` | `POST /platform/puppet-manage/puppets` | 登记已经可达的 Puppet URL；HTTP 内存壳应传入生成时相同的 `headerName`/`headerValue` |
+| `leo_generate_runtime_artifact` | `POST /platform/shell-generator/generate/runtime` | 通过既有生成器生成 runtime 制品；LeoAI 2.2.0 需要 `payloadKey`，缺省由 Adapter 生成并回传 |
+| `leo_generate_webshell` | `POST /platform/shell-generator/generate/webshell` | 通过既有生成器生成 Java WebShell 制品；需要同一把 `payloadKey` |
+| `leo_generate_memory_shell` | `POST /platform/shell-generator/generate/memoryshell` | 通过既有生成器生成 memory-shell 制品；`http`/`httpchunk` 必须传 `headerName`/`headerValue`；JDK 9+/Spring Boot 3 还应传 `targetJavaVersion` 与 `servletNamespace`；`payloadKey` 缺省由 Adapter 生成并在 `artifact.payloadKey` 回传 |
+| `leo_add_puppet` | `POST /platform/puppet-manage/puppets` | 登记已经可达的 Puppet URL；必须传入生成时同一把 `payloadKey`；HTTP 内存壳还应传入相同的 `headerName`/`headerValue` |
 
 约束：
 

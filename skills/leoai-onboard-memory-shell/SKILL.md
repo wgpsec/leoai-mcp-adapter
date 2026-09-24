@@ -33,10 +33,11 @@ MCP 只生成制品并登记已可达 `connLink`，不负责投递。生成器�
 ## 生成
 
 `http` / `httpchunk` 必须传同一对 `headerName` / `headerValue`，登记时原样给 `leo_add_puppet`。
+`payloadKey` 是 LeoAI 2.2.0 的 PayloadCodec AES 密钥。生成时可不传，用返回的 `artifact.payloadKey`；`leo_add_puppet` 必须带同一把，不能换。
 
 建议：
 
-- `reqDisguiseId` / `respDisguiseId`：`inner_AESBin_1.0.0`
+- `reqDisguiseId` / `respDisguiseId`：用 `leo_list_disguises` 的真实 id。2.2.0 常见 `inner_Java_Base64_1.0.0`，不要写死已删除的 `inner_AESBin_1.0.0`
 - `packerType`：`GroovyClassLoaderDefiner`
 - `protocol`：`http`。不要传 `httpchunk`（LeoAI 侧是 `httpChunked`）。
 - JDK 9+：`targetJavaVersion=17+`
